@@ -10,7 +10,7 @@ import streamlit as st
 from main import (
     Value, CategoryLimit, FoodEntry, DietDay, SpendingEntry,
     categories_satisfied, compute_streaks, compute_budget_streaks,
-    period_expenses, diet_rank, diet_score, STRINGS, MEALS, CATEGORIES, PERIODS, LANGS,
+    period_expenses, diet_rank, diet_score, STRINGS, MEALS, CATEGORIES, PERIODS, UNITS, LANGS,
 )
 
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "streamlit_data.db")
@@ -28,6 +28,16 @@ def budget_cat_display(c):
     """Translated label for a stored (English) budget category."""
     key = "budget_cat_" + c.lower().replace(" ", "_")
     return tr(key) if tr(key) != key else c
+
+
+def unit_display(u):
+    """Translated label for a stored (English) unit."""
+    key = "unit_" + str(u).lower()
+    return tr(key) if tr(key) != key else str(u)
+
+
+def UNIT_INDEX(u):
+    return UNITS.index(u) if u in UNITS else 0
 
 
 # ------------------------------------------------------------- database
@@ -312,96 +322,147 @@ def day_status(data, d):
 # ------------------------------------------------------------------ diet
 
 def food_form(data, day):
-    entries = data["days"].get(day.isoformat(), [])
-    options = [tr("add_new")] + [f"{i + 1}: {e['name']}" for i, e in enumerate(entries)]
-    choice = st.selectbox(tr("entry"), options, key=f"food_choice_{day.isoformat()}")
-    editing = choice != tr("add_new")
-    entry = entries[int(choice.split(":")[0]) - 1] if editing else None
+    """Add a new entry, or edit the one chosen via its row's Edit button."""
+    iso = day.isoformat()
+    entries = data["days"].get(iso, [])
     cats = diet_categories(data)
     meal_labels = [tr(m) for m in MEALS]
+    unit_labels = [unit_display(u) for u in UNITS]
 
-    with st.form(key=f"food_form_{day.isoformat()}_{'e' if editing else 'n'}"):
-        name = st.text_input(tr("food_name"), value=entry["name"] if entry else "")
+    def clear_keys(extra_keys):
+        for k in [f"fd_{iso}_name", f"fd_{iso}_meal", f"fd_{iso}_cal",
+                  f"fd_{iso}_amt", f"fd_{iso}_unit"] + extra_keys:
+            st.session_state.pop(k, None)
+
+    editing = st.session_state.get(f"food_edit_{iso}")
+    is_edit = editing is not None and 0 <= editing < len(entries)
+    entry = entries[editing] if is_edit else None
+
+    if is_edit:
+        st.markdown(f"**{tr('edit')}: {entry['name']}**")
+    with st.form(key=f"food_form_{iso}_{'e' if is_edit else 'n'}"):
+        name = st.text_input(tr("food_name"), value=entry["name"] if entry else "",
+                             key=f"fd_{iso}_name")
         meal = st.selectbox(tr("meal_type"), meal_labels,
-                            index=MEALS.index(entry["meal"]) if entry else 0)
+                            index=MEALS.index(entry["meal"]) if entry else 0,
+                            key=f"fd_{iso}_meal")
         calories = st.number_input(tr("calories"), min_value=0, step=10,
-                                   value=int(entry["calories"]) if entry else 0)
+                                   value=int(entry["calories"]) if entry else 0,
+                                   key=f"fd_{iso}_cal")
         amount = st.number_input(tr("amount"), min_value=0.0,
                                  value=float(entry["amount"][0]) if entry and entry["amount"] else 0.0,
-                                 step=0.5)
-        unit = st.selectbox(tr("unit"), ("g", "portions"),
-                            index=0 if not (entry and entry["amount"] and entry["amount"][1] == "portions") else 1)
+                                 step=0.5, key=f"fd_{iso}_amt")
+        unit = st.selectbox(
+            tr("unit"), unit_labels,
+            index=UNIT_INDEX(entry["amount"][1]) if entry and entry["amount"] and entry["amount"][1] in UNITS else 0,
+            key=f"fd_{iso}_unit",
+        )
         extras = {}
         for key, cat in cats.items():
             if key == "calories":
                 continue
             cur = entry["extras"].get(key, [0, cat.unit])[0] if entry else 0
-            extras[key] = st.number_input(f"{cat.name} ({cat.unit})", min_value=0.0,
-                                          value=float(cur), step=0.5)
-        submitted = st.form_submit_button(tr("save"))
+            extras[key] = st.number_input(
+                f"{cat.name} ({unit_display(cat.unit)})", min_value=0.0,
+                value=float(cur), step=0.5, key=f"fd_{iso}_ext_{key}")
+        if st.form_submit_button(tr("save") if is_edit else tr("add")):
+            if not name.strip():
+                st.error(tr("name_empty"))
+            else:
+                new_entry = {
+                    "name": name.strip(),
+                    "meal": MEALS[meal_labels.index(meal)],
+                    "calories": int(calories),
+                    "amount": [float(amount), UNITS[unit_labels.index(unit)]] if amount > 0 else None,
+                    "extras": {k: [float(v), cats[k].unit] for k, v in extras.items() if v > 0},
+                }
+                if is_edit:
+                    entries[editing] = new_entry
+                else:
+                    data["days"].setdefault(iso, []).append(new_entry)
+                st.session_state.pop(f"food_edit_{iso}", None)
+                clear_keys([f"fd_{iso}_ext_{k}" for k in cats if k != "calories"])
+                st.session_state.data = data
+                save_user_data(st.session_state.user, data)
+                st.rerun()
+    if is_edit:
+        if st.button(tr("cancel"), key=f"food_edit_cancel_{iso}"):
+            clear_keys([f"fd_{iso}_ext_{k}" for k in cats if k != "calories"])
+            st.session_state.pop(f"food_edit_{iso}", None)
+            st.rerun()
 
-    if submitted:
-        if not name.strip():
-            st.error(tr("name_empty"))
-            return
-        new_entry = {
-            "name": name.strip(),
-            "meal": MEALS[meal_labels.index(meal)],
-            "calories": int(calories),
-            "amount": [float(amount), unit] if amount > 0 else None,
-            "extras": {k: [float(v), cats[k].unit] for k, v in extras.items() if v > 0},
-        }
-        if editing:
-            entries[int(choice.split(":")[0]) - 1] = new_entry
-        else:
-            data["days"].setdefault(day.isoformat(), []).append(new_entry)
-        st.session_state.data = data
-        save_user_data(st.session_state.user, data)
-        st.rerun()
+
+def food_row_text(e, cats):
+    parts = [f"**{e['name']}**", tr(e["meal"])]
+    if e.get("amount"):
+        parts.append(f"{e['amount'][0]:g} {unit_display(e['amount'][1])}")
+    parts.append(f"{e['calories']} kcal")
+    for key, cat in cats.items():
+        if key == "calories":
+            continue
+        val = e.get("extras", {}).get(key)
+        if val:
+            parts.append(f"{cat.name}: {val[0]:g} {unit_display(val[1])}")
+    return " · ".join(parts)
 
 
-def remove_food_form(data, day):
+def food_table(data, day, editable=True):
     entries = data["days"].get(day.isoformat(), [])
     if not entries:
-        return
-    opts = {f"{i + 1}: {e['name']}": i for i, e in enumerate(entries)}
-    target = st.selectbox(tr("remove_entry"), [tr("select")] + list(opts),
-                          key=f"food_remove_{day.isoformat()}")
-    if st.button(tr("remove"), key=f"food_remove_btn_{day.isoformat()}",
-                 disabled=target == tr("select")):
-        data["days"][day.isoformat()].pop(opts[target])
-        if not data["days"][day.isoformat()]:
-            del data["days"][day.isoformat()]
-        st.session_state.data = data
-        save_user_data(st.session_state.user, data)
-        st.rerun()
-
-
-def food_table(data, day):
-    entries = data["days"].get(day.isoformat(), [])
-    cats = diet_categories(data)
-    rows = []
-    for i, e in enumerate(entries, start=1):
-        row = {"#": i, tr("food"): e["name"], tr("meal"): tr(e["meal"]),
-               tr("amount"): f"{e['amount'][0]:g} {e['amount'][1]}" if e.get("amount") else ""}
-        for key, cat in cats.items():
-            if key == "calories":
-                row[tr("calories")] = f"{e['calories']} kcal"
-            else:
-                val = e.get("extras", {}).get(key)
-                row[cat.name] = f"{val[0]:g} {val[1]}" if val else ""
-        rows.append(row)
-    if rows:
-        st.table(rows)
-    else:
         st.info(tr("no_food"))
+        return
+    cats = diet_categories(data)
+    if not editable:
+        rows = [
+            {"#": i, tr("food"): e["name"], tr("meal"): tr(e["meal"]),
+             tr("amount"): f"{e['amount'][0]:g} {unit_display(e['amount'][1])}" if e.get("amount") else ""}
+            for i, e in enumerate(entries, start=1)
+        ]
+        st.table(rows)
+        return
+
+    iso = day.isoformat()
+    for i, e in enumerate(entries):
+        c1, c2, c3 = st.columns([8, 1, 1])
+        with c1:
+            st.markdown(food_row_text(e, cats))
+        with c2:
+            if st.button(tr("edit"), key=f"food_edit_btn_{iso}_{i}"):
+                for k in [f"fd_{iso}_name", f"fd_{iso}_meal", f"fd_{iso}_cal",
+                          f"fd_{iso}_amt", f"fd_{iso}_unit"]:
+                    st.session_state.pop(k, None)
+                st.session_state[f"food_edit_{iso}"] = i
+                st.rerun()
+        with c3:
+            if st.button(tr("remove"), key=f"food_rm_btn_{iso}_{i}"):
+                st.session_state[f"food_rm_{iso}"] = i
+                st.rerun()
+
+    rm_i = st.session_state.get(f"food_rm_{iso}")
+    if rm_i is not None and 0 <= rm_i < len(entries):
+        st.warning(f"{tr('delete_warning')} **{entries[rm_i]['name']}**")
+        c1, c2 = st.columns(2)
+        with c1:
+            if st.button(tr("cancel"), key=f"food_rm_no_{iso}"):
+                st.session_state.pop(f"food_rm_{iso}", None)
+                st.rerun()
+        with c2:
+            if st.button(tr("confirm"), key=f"food_rm_yes_{iso}"):
+                entries.pop(rm_i)
+                if not entries:
+                    del data["days"][iso]
+                st.session_state.pop(f"food_rm_{iso}", None)
+                st.session_state.pop(f"food_edit_{iso}", None)
+                st.session_state.data = data
+                save_user_data(st.session_state.user, data)
+                st.rerun()
 
 
 def categories_manager(data):
     with st.expander(tr("category_limits")):
         st.write(tr("current_categories"))
         for key, c in data["diet_categories"].items():
-            st.write(f"- {c['name']} ({c['unit']}): {c['limit']} {tr('per_day')}")
+            st.write(f"- {c['name']} ({unit_display(c['unit'])}): {c['limit']} {tr('per_day')}")
 
         cal_limit = st.number_input(tr("calorie_limit"), min_value=0, step=50,
                                     value=int(data["diet_categories"]["calories"]["limit"]),
@@ -483,64 +544,104 @@ def categories_manager(data):
 # ---------------------------------------------------------------- budget
 
 def spending_form(data, day):
-    entries = data["spends"].get(day.isoformat(), [])
-    options = [tr("add_new")] + [f"{i + 1}: {e['name']}" for i, e in enumerate(entries)]
-    choice = st.selectbox(tr("entry"), options, key=f"spend_choice_{day.isoformat()}")
-    editing = choice != tr("add_new")
-    entry = entries[int(choice.split(":")[0]) - 1] if editing else None
+    """Add a new spending entry, or edit the one chosen via its row's Edit button."""
+    iso = day.isoformat()
+    entries = data["spends"].get(iso, [])
+    cat_labels = [budget_cat_display(c) for c in CATEGORIES]
 
-    cat_labels = {c: budget_cat_display(c) for c in CATEGORIES}
-    with st.form(key=f"spend_form_{day.isoformat()}_{'e' if editing else 'n'}"):
-        name = st.text_input(tr("spending_name"), value=entry["name"] if entry else "")
-        category_label = st.selectbox(
-            tr("category"), list(cat_labels.values()),
+    def clear_keys():
+        for k in [f"sp_{iso}_name", f"sp_{iso}_cat", f"sp_{iso}_price"]:
+            st.session_state.pop(k, None)
+
+    editing = st.session_state.get(f"spend_edit_{iso}")
+    is_edit = editing is not None and 0 <= editing < len(entries)
+    entry = entries[editing] if is_edit else None
+
+    if is_edit:
+        st.markdown(f"**{tr('edit')}: {entry['name']}**")
+    with st.form(key=f"spend_form_{iso}_{'e' if is_edit else 'n'}"):
+        name = st.text_input(tr("spending_name"), value=entry["name"] if entry else "",
+                             key=f"sp_{iso}_name")
+        category = st.selectbox(
+            tr("category"), cat_labels,
             index=CATEGORIES.index(entry["category"]) if entry and entry["category"] in CATEGORIES else 0,
+            key=f"sp_{iso}_cat",
         )
-        category = CATEGORIES[list(cat_labels.values()).index(category_label)]
         price = st.number_input(tr("price"), min_value=0.0,
                                 value=float(entry["price"]) if entry else 0.0,
-                                step=1.0)
-        submitted = st.form_submit_button(tr("save"))
+                                step=1.0, key=f"sp_{iso}_price")
+        if st.form_submit_button(tr("save") if is_edit else tr("add")):
+            if not name.strip():
+                st.error(tr("name_empty"))
+            else:
+                new_entry = {
+                    "name": name.strip(),
+                    "category": CATEGORIES[cat_labels.index(category)],
+                    "price": float(price),
+                }
+                if is_edit:
+                    entries[editing] = new_entry
+                else:
+                    data["spends"].setdefault(iso, []).append(new_entry)
+                st.session_state.pop(f"spend_edit_{iso}", None)
+                clear_keys()
+                st.session_state.data = data
+                save_user_data(st.session_state.user, data)
+                st.rerun()
+    if is_edit:
+        if st.button(tr("cancel"), key=f"spend_edit_cancel_{iso}"):
+            clear_keys()
+            st.session_state.pop(f"spend_edit_{iso}", None)
+            st.rerun()
 
-    if submitted:
-        if not name.strip():
-            st.error(tr("name_empty"))
-            return
-        new_entry = {"name": name.strip(), "category": category, "price": float(price)}
-        if editing:
-            entries[int(choice.split(":")[0]) - 1] = new_entry
-        else:
-            data["spends"].setdefault(day.isoformat(), []).append(new_entry)
-        st.session_state.data = data
-        save_user_data(st.session_state.user, data)
-        st.rerun()
 
-
-def remove_spending_form(data, day):
+def spending_table(data, day, editable=True):
     entries = data["spends"].get(day.isoformat(), [])
     if not entries:
-        return
-    opts = {f"{i + 1}: {e['name']}": i for i, e in enumerate(entries)}
-    target = st.selectbox(tr("remove_entry"), [tr("select")] + list(opts),
-                          key=f"spend_remove_{day.isoformat()}")
-    if st.button(tr("remove"), key=f"spend_remove_btn_{day.isoformat()}",
-                 disabled=target == tr("select")):
-        data["spends"][day.isoformat()].pop(opts[target])
-        if not data["spends"][day.isoformat()]:
-            del data["spends"][day.isoformat()]
-        st.session_state.data = data
-        save_user_data(st.session_state.user, data)
-        st.rerun()
-
-
-def spending_table(data, day):
-    entries = data["spends"].get(day.isoformat(), [])
-    rows = [{"#": i, tr("spending"): e["name"], tr("category"): budget_cat_display(e["category"]),
-             tr("price_col"): f"{e['price']:g} HKD"} for i, e in enumerate(entries, start=1)]
-    if rows:
-        st.table(rows)
-    else:
         st.info(tr("no_spending"))
+        return
+    if not editable:
+        rows = [
+            {"#": i, tr("spending"): e["name"], tr("category"): budget_cat_display(e["category"]),
+             tr("price_col"): f"{e['price']:g} HKD"} for i, e in enumerate(entries, start=1)
+        ]
+        st.table(rows)
+        return
+
+    iso = day.isoformat()
+    for i, e in enumerate(entries):
+        c1, c2, c3 = st.columns([8, 1, 1])
+        with c1:
+            st.markdown(f"**{e['name']}** · {budget_cat_display(e['category'])} · {e['price']:g} HKD")
+        with c2:
+            if st.button(tr("edit"), key=f"spend_edit_btn_{iso}_{i}"):
+                for k in [f"sp_{iso}_name", f"sp_{iso}_cat", f"sp_{iso}_price"]:
+                    st.session_state.pop(k, None)
+                st.session_state[f"spend_edit_{iso}"] = i
+                st.rerun()
+        with c3:
+            if st.button(tr("remove"), key=f"spend_rm_btn_{iso}_{i}"):
+                st.session_state[f"spend_rm_{iso}"] = i
+                st.rerun()
+
+    rm_i = st.session_state.get(f"spend_rm_{iso}")
+    if rm_i is not None and 0 <= rm_i < len(entries):
+        st.warning(f"{tr('delete_warning')} **{entries[rm_i]['name']}**")
+        c1, c2 = st.columns(2)
+        with c1:
+            if st.button(tr("cancel"), key=f"spend_rm_no_{iso}"):
+                st.session_state.pop(f"spend_rm_{iso}", None)
+                st.rerun()
+        with c2:
+            if st.button(tr("confirm"), key=f"spend_rm_yes_{iso}"):
+                entries.pop(rm_i)
+                if not entries:
+                    del data["spends"][iso]
+                st.session_state.pop(f"spend_rm_{iso}", None)
+                st.session_state.pop(f"spend_edit_{iso}", None)
+                st.session_state.data = data
+                save_user_data(st.session_state.user, data)
+                st.rerun()
 
 
 # ------------------------------------------------------------- combined
@@ -550,7 +651,6 @@ def render_diet_section(data, selected):
     with st.expander(tr("category_limits")):
         categories_manager(data)
     food_form(data, selected)
-    remove_food_form(data, selected)
     food_table(data, selected)
 
     day = build_day(data, selected)
@@ -563,7 +663,7 @@ def render_diet_section(data, selected):
             if total.amount > cat.limit:
                 over = True
             flag = " 🔴 " + tr("over_limit") if total.amount > cat.limit else " ✅"
-            st.write(f"{cat.name}: **{total}**{flag}")
+            st.write(f"{cat.name}: **{total.amount:g} {unit_display(total.unit)}**{flag}")
     else:
         st.write(tr("no_entries"))
 
@@ -592,7 +692,6 @@ def render_budget_section(data, selected):
             st.rerun()
 
     spending_form(data, selected)
-    remove_spending_form(data, selected)
     spending_table(data, selected)
 
     spends = spends_objects(data)
@@ -706,11 +805,11 @@ def admin_show_date(data, day):
         parts = []
         for key, cat in cats.items():
             total = day_obj.sum_of(key, cat.unit)
-            parts.append(f"{cat.name}: {total}" + (" 🔴" if total.amount > cat.limit else " ✅"))
+            parts.append(f"{cat.name}: {total.amount:g} {unit_display(total.unit)}" + (" 🔴" if total.amount > cat.limit else " ✅"))
         st.write("  |  ".join(parts))
     else:
         st.write(tr("no_entries"))
-    food_table(data, day)
+    food_table(data, day, False)
 
     st.markdown(f"**{tr('budget')}**")
     spends = spends_objects(data)
@@ -719,7 +818,7 @@ def admin_show_date(data, day):
     total = sum(int(e.price.amount) for e in period_expenses(spends, period, day))
     flag = tr("over_limit") if total > limit else tr("within_limit")
     st.write(f"{tr(period)} {tr('total')}: {total} HKD / {tr('limit_hkd')}: {limit} | {flag}")
-    spending_table(data, day)
+    spending_table(data, day, False)
 
 
 def render_admin_view():
@@ -731,7 +830,7 @@ def render_admin_view():
         return
     data = load_user_data(target)
     cats = diet_categories(data)
-    ctext = ", ".join(f"{c['name']} ({c['unit']}): {c['limit']}" for c in data["diet_categories"].values())
+    ctext = ", ".join(f"{c['name']} ({unit_display(c['unit'])}): {c['limit']}" for c in data["diet_categories"].values())
     st.write(f"{tr('category_limits')}: {ctext}")
     today = date.today()
     day_s, week_s, month_s = compute_streaks(build_all_days(data), cats, today)

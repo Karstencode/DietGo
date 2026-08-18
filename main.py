@@ -12,6 +12,7 @@ except ImportError:
 MEALS = ("breakfast", "lunch", "dinner", "other")
 CATEGORIES = ("Food", "Transport", "Entertainment", "Utilities", "Clothing", "Other")
 PERIODS = ("day", "week", "month")
+UNITS = ("g", "ml", "portions", "servings", "pieces", "kcal")
 LANGS = ("en", "zh")
 DATA_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data.json")
 
@@ -109,6 +110,15 @@ STRINGS = {
         "name_empty": "Name cannot be empty.",
         "no_food": "No food logged for this day.",
         "no_spending": "No spending logged for this day.",
+        "unit_g": "g",
+        "unit_ml": "ml",
+        "unit_portions": "portions",
+        "unit_servings": "servings",
+        "unit_pieces": "pieces",
+        "unit_kcal": "kcal",
+        "unit_mg": "mg",
+        "confirm": "Confirm",
+        "delete_warning": "This action is permanent and cannot be undone.",
         "current_categories": "Current categories:",
         "per_day": "per day",
         "update_calorie_limit": "Update calorie limit",
@@ -234,6 +244,15 @@ STRINGS = {
         "name_empty": "名稱不能為空。",
         "no_food": "當天沒有飲食記錄。",
         "no_spending": "當天沒有支出記錄。",
+        "unit_g": "公克",
+        "unit_ml": "毫升",
+        "unit_portions": "份",
+        "unit_servings": "份量",
+        "unit_pieces": "個",
+        "unit_kcal": "千卡",
+        "unit_mg": "毫克",
+        "confirm": "確認",
+        "delete_warning": "此操作為永久刪除，無法復原。",
         "current_categories": "目前類別：",
         "per_day": "每日",
         "update_calorie_limit": "更新卡路里限制",
@@ -626,6 +645,17 @@ class DietTrackerApp:
     def tr(self, key):
         return STRINGS[self.lang][key]
 
+    def unit_display(self, unit):
+        key = "unit_" + str(unit).lower()
+        table = STRINGS[self.lang]
+        return table[key] if key in table else str(unit)
+
+    def unit_from_label(self, label):
+        for u in ("g", "portions", "kcal", "mg"):
+            if self.unit_display(u) == label:
+                return u
+        return label
+
     def on_lang_change(self, _event=None):
         self.lang = "zh" if self.lang_combo.get() == "中文" else "en"
         self.root.title(self.tr("app_title"))
@@ -810,7 +840,7 @@ class DietTrackerApp:
         self.category_list.delete(0, tk.END)
         for key in self.category_keys:
             cat = self.diet_categories[key]
-            self.category_list.insert(tk.END, f"{cat.name} ({cat.unit}): limit {cat.limit}")
+            self.category_list.insert(tk.END, f"{cat.name} ({self.unit_display(cat.unit)}): limit {cat.limit}")
 
     def add_category(self):
         dialog = tk.Toplevel(self.root)
@@ -827,8 +857,9 @@ class DietTrackerApp:
         tk.Entry(frame, textvariable=name_var).grid(row=0, column=1, sticky="we", pady=3)
 
         tk.Label(frame, text=self.tr("unit") + ":").grid(row=1, column=0, sticky="w")
-        unit_var = tk.StringVar(value="g")
-        ttk.Combobox(frame, textvariable=unit_var, values=("g", "portions", "kcal", "mg")).grid(
+        unit_var = tk.StringVar(value=self.unit_display("g"))
+        ttk.Combobox(frame, textvariable=unit_var,
+                     values=[self.unit_display(u) for u in ("g", "portions", "kcal", "mg")]).grid(
             row=1, column=1, sticky="we", pady=3
         )
 
@@ -850,7 +881,7 @@ class DietTrackerApp:
             except ValueError:
                 messagebox.showerror("Error", self.tr("err_invalid_number"), parent=dialog)
                 return
-            self.diet_categories[key] = CategoryLimit(name, unit_var.get().strip() or "g", limit)
+            self.diet_categories[key] = CategoryLimit(name, self.unit_from_label(unit_var.get().strip()) or "g", limit)
             self.refresh_all()
             dialog.destroy()
 
@@ -884,8 +915,9 @@ class DietTrackerApp:
         tk.Entry(frame, textvariable=name_var).grid(row=0, column=1, sticky="we", pady=3)
 
         tk.Label(frame, text=self.tr("unit") + ":").grid(row=1, column=0, sticky="w")
-        unit_var = tk.StringVar(value=cat.unit)
-        ttk.Combobox(frame, textvariable=unit_var, values=("g", "portions", "kcal", "mg")).grid(
+        unit_var = tk.StringVar(value=self.unit_display(cat.unit))
+        ttk.Combobox(frame, textvariable=unit_var,
+                     values=[self.unit_display(u) for u in ("g", "portions", "kcal", "mg")]).grid(
             row=1, column=1, sticky="we", pady=3
         )
 
@@ -915,7 +947,7 @@ class DietTrackerApp:
                             entry.extras[new_key] = entry.extras.pop(key)
             edited = self.diet_categories[new_key]
             edited.name = name
-            edited.unit = unit_var.get().strip() or "g"
+            edited.unit = self.unit_from_label(unit_var.get().strip()) or "g"
             edited.limit = limit
             self.refresh_all()
             dialog.destroy()
@@ -973,8 +1005,12 @@ class DietTrackerApp:
         tk.Label(frame, text=self.tr("amount") + ":").grid(row=4, column=0, sticky="w")
         amount_var = tk.StringVar(value=str(entry.amount.amount) if entry and entry.amount else "")
         tk.Entry(frame, textvariable=amount_var).grid(row=4, column=1, sticky="we", pady=3)
-        unit_var = tk.StringVar(value=entry.amount.unit if entry and entry.amount else "g")
-        ttk.Combobox(frame, textvariable=unit_var, values=("g", "portions"), state="readonly", width=9).grid(
+        unit_var = tk.StringVar(
+            value=self.unit_display(entry.amount.unit) if entry and entry.amount else self.unit_display("g")
+        )
+        ttk.Combobox(frame, textvariable=unit_var,
+                     values=[self.unit_display(u) for u in ("g", "portions")],
+                     state="readonly", width=9).grid(
             row=4, column=2, sticky="we", padx=(4, 0), pady=3
         )
 
@@ -983,7 +1019,7 @@ class DietTrackerApp:
         for key, cat in self.diet_categories.items():
             if key == "calories":
                 continue
-            tk.Label(frame, text=f"{cat.name} ({cat.unit}):").grid(row=row, column=0, sticky="w")
+            tk.Label(frame, text=f"{cat.name} ({self.unit_display(cat.unit)}):").grid(row=row, column=0, sticky="w")
             var = tk.StringVar(value=str(entry.extras[key].amount) if entry and key in entry.extras else "")
             tk.Entry(frame, textvariable=var).grid(row=row, column=1, columnspan=2, sticky="we", pady=3)
             extra_vars[key] = var
@@ -1011,7 +1047,7 @@ class DietTrackerApp:
                     messagebox.showerror("Error", self.tr("err_invalid_amount"), parent=dialog)
                     return
                 if amt > 0:
-                    amount = Value(amt, unit_var.get())
+                    amount = Value(amt, self.unit_from_label(unit_var.get()))
 
             extras = {}
             for key, var in extra_vars.items():
@@ -1086,13 +1122,18 @@ class DietTrackerApp:
         day = self.days.get(self.selected_date)
         if day:
             for i, entry in enumerate(day.entries):
-                values = [entry.name, self.tr(entry.meal), str(entry.amount) if entry.amount else ""]
+                amount_txt = ""
+                if entry.amount:
+                    amount_txt = f"{entry.amount.amount:g} {self.unit_display(entry.amount.unit)}"
+                values = [entry.name, self.tr(entry.meal), amount_txt]
                 for key in cats:
                     if key == "calories":
-                        values.append(str(entry.calories))
+                        values.append(f"{entry.calories.amount:g} {self.unit_display('kcal')}")
                     else:
                         extra = entry.extras.get(key)
-                        values.append(str(extra) if extra else "")
+                        values.append(
+                            f"{extra.amount:g} {self.unit_display(extra.unit)}" if extra else ""
+                        )
                 self.tree.insert("", "end", iid=str(i), values=values)
 
         if not day or not day.entries:
@@ -1102,7 +1143,7 @@ class DietTrackerApp:
             over = False
             for key, cat in self.diet_categories.items():
                 total = day.sum_of(key, cat.unit)
-                part = f"{cat.name}: {total}"
+                part = f"{cat.name}: {total.amount:g} {self.unit_display(total.unit)}"
                 if total.amount > cat.limit:
                     part += "!"
                     over = True
