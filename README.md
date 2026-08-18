@@ -54,6 +54,19 @@ python3 main.py
 python3 test.py
 ```
 
+## Admin account (web)
+
+A reserved **`admin`** account is created automatically on first run. It can
+view any user's records (searchable list), and only **admin** can:
+
+- reset any user's password
+- delete accounts
+- add accounts
+
+Set the admin password via the `ADMIN_PASSWORD` environment variable or in
+`.streamlit/secrets.toml` (`admin_password`). Otherwise it defaults to
+`admin123` — **change it before going live**.
+
 ## Deployment (Streamlit Community Cloud)
 
 1. Push this folder to a GitHub repository.

@@ -15,6 +15,8 @@ from main import (
 
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "streamlit_data.db")
 
+ADMIN_USER = "admin"
+
 
 def tr(key):
     lang = st.session_state.get("lang", "en")
@@ -89,6 +91,48 @@ def delete_account(username, password):
         conn.execute("DELETE FROM users WHERE username = ?", (username,))
         conn.execute("DELETE FROM user_data WHERE username = ?", (username,))
     return True, tr("account_deleted")
+
+
+def reset_password(username, new_password):
+    """Overwrite an account's password hash (no way to recover the old one)."""
+    if not username.strip():
+        return False, tr("username_empty")
+    if len(new_password) < 4:
+        return False, tr("password_short")
+    with get_db() as conn:
+        if not conn.execute("SELECT 1 FROM users WHERE username = ?", (username,)).fetchone():
+            return False, tr("user_not_found")
+    salt = os.urandom(16).hex()
+    with get_db() as conn:
+        conn.execute(
+            "UPDATE users SET salt = ?, hash = ? WHERE username = ?",
+            (salt, hash_password(new_password, salt), username),
+        )
+    return True, tr("password_reset")
+
+
+def admin_password():
+    try:
+        return st.secrets.get("admin_password") or "admin123"
+    except Exception:
+        return os.environ.get("ADMIN_PASSWORD") or "admin123"
+
+
+def ensure_admin():
+    """Create the reserved admin account on first start."""
+    if ADMIN_USER in all_usernames():
+        return
+    salt = os.urandom(16).hex()
+    with get_db() as conn:
+        conn.execute(
+            "INSERT INTO users (username, salt, hash) VALUES (?, ?, ?)",
+            (ADMIN_USER, salt, hash_password(admin_password(), salt)),
+        )
+
+
+def all_usernames():
+    with get_db() as conn:
+        return [r[0] for r in conn.execute("SELECT username FROM users ORDER BY username").fetchall()]
 
 
 def default_data():
@@ -605,7 +649,102 @@ def leaderboard_table():
     st.table(rows)
 
 
+def admin_show_records(target, data):
+    cats = diet_categories(data)
+    ctext = ", ".join(f"{c['name']} ({c['unit']}): {c['limit']}" for c in data["diet_categories"].values())
+    st.write(f"{tr('category_limits')}: {ctext}")
+    st.write(
+        f"{tr('period')}: {tr(data['budget_period'])} | "
+        f"{tr('limit_hkd')}: {data['budget_limit']}"
+    )
+    today = date.today()
+    day_s, week_s, month_s = compute_streaks(build_all_days(data), cats, today)
+    rank_key, score = diet_rank(day_s, week_s, month_s)
+    st.write(
+        f"{tr('streaks')}: {tr('day')} {day_s} | {tr('week')} {week_s} | "
+        f"{tr('month')} {month_s} | 🏆 {tr(rank_key)} ({score})"
+    )
+
+    frows = []
+    for iso, es in sorted(data["days"].items()):
+        for e in es:
+            frows.append({"#": len(frows) + 1, tr("date"): iso,
+                          tr("food"): e["name"], tr("meal"): tr(e["meal"]),
+                          tr("calories"): f"{e['calories']} kcal"})
+    st.markdown(f"**{tr('diet')}**")
+    if frows:
+        st.table(frows)
+    else:
+        st.info(tr("no_food"))
+
+    srows = []
+    for iso, es in sorted(data["spends"].items()):
+        for e in es:
+            srows.append({"#": len(srows) + 1, tr("date"): iso,
+                          tr("spending"): e["name"],
+                          tr("category"): budget_cat_display(e["category"]),
+                          tr("price_col"): f"{e['price']:g} HKD"})
+    st.markdown(f"**{tr('budget')}**")
+    if srows:
+        st.table(srows)
+    else:
+        st.info(tr("no_spending"))
+
+
+def admin_panel():
+    users = all_usernames()
+    query = st.text_input(tr("search_users"), key="adm_search").strip().lower()
+    matches = [u for u in users if query in u.lower()] if query else users
+    if not matches:
+        st.info(tr("no_users_match"))
+        return
+    target = st.selectbox(tr("select_user"), matches, key="adm_target")
+
+    st.markdown(f"#### {tr('view_records')} · {target}")
+    admin_show_records(target, load_user_data(target))
+
+    st.markdown(f"**{tr('admin_panel')}**")
+    col_r, col_a, col_d = st.columns(3)
+    with col_r:
+        with st.form("adm_reset"):
+            a_new = st.text_input(tr("new_password"), type="password", key="adm_new")
+            a_conf = st.text_input(tr("confirm_password"), type="password", key="adm_conf")
+            if st.form_submit_button(tr("reset_pw")):
+                if a_new != a_conf:
+                    st.error(tr("password_mismatch"))
+                else:
+                    ok, msg = reset_password(target, a_new)
+                    if ok:
+                        st.success(msg)
+                    else:
+                        st.error(msg)
+    with col_a:
+        with st.form("adm_add"):
+            a_user = st.text_input(tr("username"), key="adm_add_user")
+            a_pw = st.text_input(tr("password"), type="password", key="adm_add_pw")
+            if st.form_submit_button(tr("add_account")):
+                ok, msg = signup(a_user.strip(), a_pw)
+                if ok:
+                    save_user_data(a_user.strip(), default_data())
+                    st.success(msg)
+                else:
+                    st.error(msg)
+    with col_d:
+        if target != ADMIN_USER:
+            if st.button(tr("delete_account"), key="adm_del"):
+                with get_db() as conn:
+                    conn.execute("DELETE FROM users WHERE username = ?", (target,))
+                    conn.execute("DELETE FROM user_data WHERE username = ?", (target,))
+                st.success(tr("account_deleted"))
+                st.rerun()
+        else:
+            st.caption(tr("admin"))
+
+
 def render_app(data):
+    if st.session_state.user == ADMIN_USER:
+        with st.expander("🛡️ " + tr("admin_panel")):
+            admin_panel()
     with st.expander("🏆 " + tr("leaderboard")):
         leaderboard_table()
     selected = calendar_widget(
@@ -691,6 +830,7 @@ def inject_mobile_css():
 def main():
     st.set_page_config(page_title=STRINGS["en"]["app_title"], layout="wide")
     init_db()
+    ensure_admin()
     inject_mobile_css()
 
     st.session_state.setdefault("lang", "en")
