@@ -649,61 +649,17 @@ def leaderboard_table():
     st.table(rows)
 
 
-def admin_show_records(target, data):
-    cats = diet_categories(data)
-    ctext = ", ".join(f"{c['name']} ({c['unit']}): {c['limit']}" for c in data["diet_categories"].values())
-    st.write(f"{tr('category_limits')}: {ctext}")
-    st.write(
-        f"{tr('period')}: {tr(data['budget_period'])} | "
-        f"{tr('limit_hkd')}: {data['budget_limit']}"
-    )
-    today = date.today()
-    day_s, week_s, month_s = compute_streaks(build_all_days(data), cats, today)
-    rank_key, score = diet_rank(day_s, week_s, month_s)
-    st.write(
-        f"{tr('streaks')}: {tr('day')} {day_s} | {tr('week')} {week_s} | "
-        f"{tr('month')} {month_s} | 🏆 {tr(rank_key)} ({score})"
-    )
-
-    frows = []
-    for iso, es in sorted(data["days"].items()):
-        for e in es:
-            frows.append({"#": len(frows) + 1, tr("date"): iso,
-                          tr("food"): e["name"], tr("meal"): tr(e["meal"]),
-                          tr("calories"): f"{e['calories']} kcal"})
-    st.markdown(f"**{tr('diet')}**")
-    if frows:
-        st.table(frows)
-    else:
-        st.info(tr("no_food"))
-
-    srows = []
-    for iso, es in sorted(data["spends"].items()):
-        for e in es:
-            srows.append({"#": len(srows) + 1, tr("date"): iso,
-                          tr("spending"): e["name"],
-                          tr("category"): budget_cat_display(e["category"]),
-                          tr("price_col"): f"{e['price']:g} HKD"})
-    st.markdown(f"**{tr('budget')}**")
-    if srows:
-        st.table(srows)
-    else:
-        st.info(tr("no_spending"))
-
-
 def admin_panel():
+    """Account management only — no access to any diet/budget data."""
     users = all_usernames()
     query = st.text_input(tr("search_users"), key="adm_search").strip().lower()
     matches = [u for u in users if query in u.lower()] if query else users
     if not matches:
         st.info(tr("no_users_match"))
         return
-    target = st.selectbox(tr("select_user"), matches, key="adm_target")
+    st.selectbox(tr("select_user"), matches, key="adm_target")
+    target = st.session_state.get("adm_target")
 
-    st.markdown(f"#### {tr('view_records')} · {target}")
-    admin_show_records(target, load_user_data(target))
-
-    st.markdown(f"**{tr('admin_panel')}**")
     col_r, col_a, col_d = st.columns(3)
     with col_r:
         with st.form("adm_reset"):
@@ -730,7 +686,7 @@ def admin_panel():
                 else:
                     st.error(msg)
     with col_d:
-        if target != ADMIN_USER:
+        if target and target != ADMIN_USER:
             if st.button(tr("delete_account"), key="adm_del"):
                 with get_db() as conn:
                     conn.execute("DELETE FROM users WHERE username = ?", (target,))
@@ -741,10 +697,63 @@ def admin_panel():
             st.caption(tr("admin"))
 
 
+def admin_show_date(data, day):
+    """Read-only view of one user's diet/budget records for a chosen day."""
+    day_obj = build_day(data, day)
+    cats = diet_categories(data)
+    st.markdown(f"**{tr('diet')}**")
+    if day_obj.entries:
+        parts = []
+        for key, cat in cats.items():
+            total = day_obj.sum_of(key, cat.unit)
+            parts.append(f"{cat.name}: {total}" + (" 🔴" if total.amount > cat.limit else " ✅"))
+        st.write("  |  ".join(parts))
+    else:
+        st.write(tr("no_entries"))
+    food_table(data, day)
+
+    st.markdown(f"**{tr('budget')}**")
+    spends = spends_objects(data)
+    period = data["budget_period"]
+    limit = data["budget_limit"]
+    total = sum(int(e.price.amount) for e in period_expenses(spends, period, day))
+    flag = tr("over_limit") if total > limit else tr("within_limit")
+    st.write(f"{tr(period)} {tr('total')}: {total} HKD / {tr('limit_hkd')}: {limit} | {flag}")
+    spending_table(data, day)
+
+
+def render_admin_view():
+    with st.expander("🛡️ " + tr("admin_panel"), expanded=True):
+        admin_panel()
+    target = st.session_state.get("adm_target")
+    query = (st.session_state.get("adm_search") or "").strip().lower()
+    if not target or (query and query not in target.lower()):
+        return
+    data = load_user_data(target)
+    cats = diet_categories(data)
+    ctext = ", ".join(f"{c['name']} ({c['unit']}): {c['limit']}" for c in data["diet_categories"].values())
+    st.write(f"{tr('category_limits')}: {ctext}")
+    today = date.today()
+    day_s, week_s, month_s = compute_streaks(build_all_days(data), cats, today)
+    rank_key, score = diet_rank(day_s, week_s, month_s)
+    st.write(
+        f"{tr('streaks')}: {tr('day')} {day_s} | {tr('week')} {week_s} | "
+        f"{tr('month')} {month_s} | 🏆 {tr(rank_key)} ({score})"
+    )
+
+    st.markdown(f"### {tr('view_records')} · {target}")
+    selected = calendar_widget(
+        "admin_" + target, lambda d: (diet_status(data, d), budget_status(data, d))
+    )
+    st.subheader(format_date(selected))
+    admin_show_date(data, selected)
+    st.divider()
+
+
 def render_app(data):
     if st.session_state.user == ADMIN_USER:
-        with st.expander("🛡️ " + tr("admin_panel")):
-            admin_panel()
+        render_admin_view()
+        return
     with st.expander("🏆 " + tr("leaderboard")):
         leaderboard_table()
     selected = calendar_widget(
@@ -854,20 +863,23 @@ def main():
             st.rerun()
 
         with st.expander(tr("delete_account")):
-            conf = st.text_input(tr("confirm_username"))
-            del_pw = st.text_input(tr("password"), type="password", key="del_pw")
-            if st.button(tr("delete_account"), key="del_btn"):
-                if conf.strip() != st.session_state.user:
-                    st.error(tr("username_mismatch"))
-                else:
-                    ok, msg = delete_account(st.session_state.user, del_pw)
-                    if ok:
-                        st.success(msg)
-                        st.session_state.user = None
-                        st.session_state.data = default_data()
-                        st.rerun()
+            if st.session_state.user == ADMIN_USER:
+                st.caption(tr("admin"))
+            else:
+                conf = st.text_input(tr("confirm_username"))
+                del_pw = st.text_input(tr("password"), type="password", key="del_pw")
+                if st.button(tr("delete_account"), key="del_btn"):
+                    if conf.strip() != st.session_state.user:
+                        st.error(tr("username_mismatch"))
                     else:
-                        st.error(msg)
+                        ok, msg = delete_account(st.session_state.user, del_pw)
+                        if ok:
+                            st.success(msg)
+                            st.session_state.user = None
+                            st.session_state.data = default_data()
+                            st.rerun()
+                        else:
+                            st.error(msg)
 
     st.title(tr("app_title"))
     render_app(st.session_state.data)
