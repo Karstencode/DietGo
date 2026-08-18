@@ -617,10 +617,10 @@ def render_app(data):
         f"| {tr('diet_budget_legend')}"
     )
 
-    col_diet, col_budget = st.columns(2, gap="large")
-    with col_diet:
+    tab_diet, tab_budget = st.tabs([tr("diet"), tr("budget")])
+    with tab_diet:
         render_diet_section(data, selected)
-    with col_budget:
+    with tab_budget:
         render_budget_section(data, selected)
 
 
@@ -656,9 +656,42 @@ def auth_screen():
                 st.error(msg)
 
 
+def inject_mobile_css():
+    st.markdown(
+        """
+        <style>
+        @media (max-width: 720px) {
+            .block-container {
+                padding-top: 2rem;
+                padding-left: 0.6rem;
+                padding-right: 0.6rem;
+            }
+            [data-testid="stTable"] {
+                display: block;
+                overflow-x: auto;
+            }
+            .stButton > button,
+            .stFormSubmitButton > button {
+                width: 100%;
+                min-height: 2.5rem;
+            }
+            [data-testid="stMetric"] {
+                padding: 0.5rem;
+            }
+        }
+        .main .block-container {
+            max-width: 64rem;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 def main():
     st.set_page_config(page_title=STRINGS["en"]["app_title"], layout="wide")
     init_db()
+    inject_mobile_css()
 
     st.session_state.setdefault("lang", "en")
     st.session_state.setdefault("user", None)
