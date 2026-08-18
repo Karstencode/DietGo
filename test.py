@@ -408,6 +408,20 @@ class TestLeaderboards(unittest.TestCase):
         self.assertEqual(key, "leaderboard_removed")
         self.assertEqual(webapp.all_leaderboards(), [])
 
+    def test_delete_renumbers_ids_and_memberships(self):
+        self.add_user("alice")
+        webapp.create_leaderboard("A", "1", "alice")
+        webapp.create_leaderboard("B", "2", None)
+        webapp.create_leaderboard("C", "3", None)
+        self.assertEqual([b["id"] for b in webapp.all_leaderboards()], [1, 2, 3])
+        webapp.delete_leaderboard(2)
+        boards = webapp.all_leaderboards()
+        self.assertEqual([b["id"] for b in boards], [1, 2])
+        self.assertEqual([b["name"] for b in boards], ["A", "C"])
+        self.assertEqual([b for b in boards if b["name"] == "A"][0]["members"], ["alice"])
+        webapp.create_leaderboard("D", "4", None)
+        self.assertEqual([b["id"] for b in webapp.all_leaderboards()], [1, 2, 3])
+
     def test_duplicate_name_and_already_member(self):
         self.add_user("alice")
         self.add_user("bob")
@@ -543,6 +557,67 @@ class TestAdminRestrictions(unittest.TestCase):
         self.assertTrue(keys & {"lb_name", "lb_code", "jb_name", "jb_code"})
         self.assertTrue(any("Add item" in b.label for b in at.button))
         self.assertFalse(any("Admin panel" in e.label for e in at.expander))
+
+
+class TestUserLeaderboardUI(unittest.TestCase):
+    """User leaderboards are a dropdown listing joined boards + Add/Join actions."""
+
+    DB = os.path.join(os.path.dirname(os.path.abspath(webapp.__file__)), "streamlit_data.db")
+
+    def setUp(self):
+        webapp.DB_PATH = self.DB
+        if os.path.exists(self.DB):
+            os.remove(self.DB)
+        webapp.init_db()
+        webapp.ensure_admin()
+        salt = os.urandom(16).hex()
+        with webapp.get_db() as conn:
+            conn.execute("INSERT INTO users (username, salt, hash) VALUES (?,?,?)",
+                         ("bob", salt, webapp.hash_password("pw", salt)))
+        self.at = AppTest.from_file(APP_PATH)
+        self.at.run(timeout=60)
+        self.at.session_state["user"] = "bob"
+        self.at.session_state["data"] = webapp.default_data()
+        self.at.run(timeout=60)
+
+    def tearDown(self):
+        if os.path.exists(self.DB):
+            os.remove(self.DB)
+
+    def test_dropdown_contains_add_join_and_joined_boards(self):
+        webapp.create_leaderboard("Team A", "x", "bob")
+        self.at.run(timeout=60)
+        dd = [s for s in self.at.selectbox if s.key == "lb_dd"][0]
+        self.assertTrue(any(o.startswith("➕") and "Add" in o for o in dd.options))
+        self.assertTrue(any(o.startswith("➕") and "Join" in o for o in dd.options))
+        self.assertTrue(any("Team A" in o for o in dd.options))
+
+    def test_default_is_add_form_when_no_boards(self):
+        dd = [s for s in self.at.selectbox if s.key == "lb_dd"][0]
+        self.assertEqual(dd.index, 0)
+        keys = {t.key for t in self.at.text_input}
+        self.assertIn("lb_name", keys)
+
+    def test_join_action_shows_join_form(self):
+        webapp.create_leaderboard("Team A", "x", None)
+        self.at.run(timeout=60)
+        dd = [s for s in self.at.selectbox if s.key == "lb_dd"][0]
+        join_opt = [o for o in dd.options if "Join" in o][0]
+        dd.set_value(join_opt)
+        self.at.run(timeout=60)
+        keys = {t.key for t in self.at.text_input}
+        self.assertIn("jb_name", keys)
+        self.assertIn("jb_code", keys)
+
+    def test_selecting_joined_board_shows_rank_table(self):
+        webapp.create_leaderboard("Team A", "x", "bob")
+        self.at.run(timeout=60)
+        dd = [s for s in self.at.selectbox if s.key == "lb_dd"][0]
+        team_opt = [o for o in dd.options if "Team A" in o][0]
+        dd.set_value(team_opt)
+        self.at.run(timeout=60)
+        self.assertGreaterEqual(len(self.at.table), 1)
+        self.assertIn("bob", str(self.at.table[0].value))
 
 
 class TestTranslationCoverage(unittest.TestCase):

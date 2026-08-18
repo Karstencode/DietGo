@@ -180,10 +180,22 @@ def leaderboard_members(lid):
 
 
 def delete_leaderboard(lid):
-    """Delete a leaderboard and all its memberships."""
+    """Delete a leaderboard and all its memberships, renumbering the rest so ids stay 1..N."""
     with get_db() as conn:
         conn.execute("DELETE FROM leaderboards WHERE id = ?", (lid,))
         conn.execute("DELETE FROM memberships WHERE leaderboard_id = ?", (lid,))
+        rows = [r[0] for r in conn.execute("SELECT id FROM leaderboards ORDER BY id").fetchall()]
+        for new_id, old_id in enumerate(rows, start=1):
+            if old_id != new_id:
+                conn.execute("UPDATE leaderboards SET id = ? WHERE id = ?", (new_id, old_id))
+                conn.execute(
+                    "UPDATE memberships SET leaderboard_id = ? WHERE leaderboard_id = ?",
+                    (new_id, old_id),
+                )
+        if conn.execute("SELECT 1 FROM sqlite_master WHERE name = 'sqlite_sequence'").fetchone():
+            conn.execute("DELETE FROM sqlite_sequence WHERE name = 'leaderboards'")
+            conn.execute("INSERT INTO sqlite_sequence (name, seq) VALUES ('leaderboards', ?)",
+                         (len(rows),))
     return True, "leaderboard_removed"
 
 
@@ -900,54 +912,67 @@ def render_budget_section(data, selected):
 def leaderboards_section():
     """Create/join leaderboards and show rankings of the boards you're in."""
     st.markdown(f"### 🏆 {tr('leaderboards')}")
-    c1, c2 = st.columns(2)
-    with c1:
-        with st.form("lb_create"):
-            lb_name = st.text_input(tr("leaderboard_name"), key="lb_name")
-            lb_code = st.text_input(tr("access_code"), type="password", key="lb_code")
-            if st.form_submit_button(tr("create_leaderboard")):
-                ok, key = create_leaderboard(lb_name.strip(), lb_code.strip(), st.session_state.user)
-                if ok:
-                    for k in ("lb_name", "lb_code"):
-                        st.session_state.pop(k, None)
-                    st.success(tr(key))
-                    st.rerun()
-                else:
-                    st.error(tr(key))
-    with c2:
-        with st.form("lb_join"):
-            jb_name = st.text_input(tr("leaderboard_name"), key="jb_name")
-            jb_code = st.text_input(tr("access_code"), type="password", key="jb_code")
-            if st.form_submit_button(tr("join_leaderboard")):
-                ok, key = join_leaderboard(jb_name.strip(), jb_code.strip(), st.session_state.user)
-                if ok:
-                    for k in ("jb_name", "jb_code"):
-                        st.session_state.pop(k, None)
-                    st.success(tr(key))
-                    st.rerun()
-                else:
-                    st.error(tr(key))
-
     boards = my_leaderboards(st.session_state.user)
-    if not boards:
-        st.info(tr("no_leaderboards"))
+    options = {
+        "➕ " + tr("add_leaderboard"): ("form", "add"),
+        "➕ " + tr("join_leaderboard"): ("form", "join"),
+    }
+    for b in boards:
+        options[f"{b['name']} ({b['member_count']} {tr('members')})"] = ("board", b)
+    labels = list(options)
+    default = 2 if boards else 0
+    choice = st.selectbox(tr("leaderboards"), labels, index=default, key="lb_dd")
+    kind, payload = options[choice]
+
+    if kind == "form":
+        if payload == "add":
+            with st.form("lb_create"):
+                lb_name = st.text_input(tr("leaderboard_name"), key="lb_name")
+                lb_code = st.text_input(tr("access_code"), type="password", key="lb_code")
+                if st.form_submit_button(tr("create_leaderboard")):
+                    ok, key = create_leaderboard(lb_name.strip(), lb_code.strip(), st.session_state.user)
+                    if ok:
+                        for k in ("lb_name", "lb_code"):
+                            st.session_state.pop(k, None)
+                        st.success(tr(key))
+                        st.rerun()
+                    else:
+                        st.error(tr(key))
+        else:
+            with st.form("lb_join"):
+                jb_name = st.text_input(tr("leaderboard_name"), key="jb_name")
+                jb_code = st.text_input(tr("access_code"), type="password", key="jb_code")
+                if st.form_submit_button(tr("join_leaderboard")):
+                    ok, key = join_leaderboard(jb_name.strip(), jb_code.strip(), st.session_state.user)
+                    if ok:
+                        for k in ("jb_name", "jb_code"):
+                            st.session_state.pop(k, None)
+                        st.success(tr(key))
+                        st.rerun()
+                    else:
+                        st.error(tr(key))
         return
-    for board in boards:
-        with st.expander(f"🏆 {board['name']} · {board['member_count']} {tr('members')}"):
-            rows = []
-            for place, (user, d, w, m, score) in enumerate(rank_users(board["members"]), start=1):
-                mark = " ★" if user == st.session_state.user else ""
-                rank_key, _ = diet_rank(d, w, m)
-                rows.append({
-                    tr("rank_title"): place,
-                    tr("user"): user + mark,
-                    tr("day"): d,
-                    tr("week"): w,
-                    tr("month"): m,
-                    tr("score"): score,
-                    tr("tier"): tr(rank_key),
-                })
+
+    board = payload
+    rows = []
+    for place, (user, d, w, m, score) in enumerate(rank_users(board["members"]), start=1):
+        mark = " ★" if user == st.session_state.user else ""
+        rank_key, _ = diet_rank(d, w, m)
+        rows.append({
+            tr("rank_title"): place,
+            tr("user"): user + mark,
+            tr("day"): d,
+            tr("week"): w,
+            tr("month"): m,
+            tr("score"): score,
+            tr("tier"): tr(rank_key),
+        })
+    st.caption(f"{tr('members')}: {', '.join(board['members']) or '—'}")
+    with st.container(height=460):
+        if rows:
             st.table(rows)
+        else:
+            st.info(tr("no_members_yet"))
 
 
 def admin_panel():
