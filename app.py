@@ -474,9 +474,9 @@ def categories_manager(data):
             st.rerun()
 
         with st.form("add_category"):
-            cname = st.text_input(tr("category_name"))
-            cunit = st.text_input(tr("unit"), value="g")
-            climit = st.number_input(tr("daily_limit"), min_value=0, step=1, value=10)
+            cname = st.text_input(tr("category_name"), key="ac_name")
+            cunit = st.text_input(tr("unit"), value="g", key="ac_unit")
+            climit = st.number_input(tr("daily_limit"), min_value=0, step=1, value=10, key="ac_limit")
             if st.form_submit_button(tr("add_category")):
                 if not cname.strip():
                     st.error(tr("name_empty"))
@@ -486,6 +486,8 @@ def categories_manager(data):
                     data["diet_categories"][cname.strip().lower()] = {
                         "name": cname.strip(), "unit": cunit.strip() or "g", "limit": int(climit),
                     }
+                    for k in ("ac_name", "ac_unit", "ac_limit"):
+                        st.session_state.pop(k, None)
                     st.session_state.data = data
                     save_user_data(st.session_state.user, data)
                     st.rerun()
@@ -506,6 +508,8 @@ def categories_manager(data):
                     edited = data["diet_categories"]["calories"]
                     edited["unit"] = new_unit.strip() or "kcal"
                     edited["limit"] = int(new_limit)
+                    for k in ("ec_name", "ec_unit", "ec_limit"):
+                        st.session_state.pop(k, None)
                     st.session_state.data = data
                     save_user_data(st.session_state.user, data)
                     st.rerun()
@@ -524,6 +528,8 @@ def categories_manager(data):
                         edited["name"] = new_name.strip()
                         edited["unit"] = new_unit.strip() or "g"
                         edited["limit"] = int(new_limit)
+                        for k in ("ec_name", "ec_unit", "ec_limit"):
+                            st.session_state.pop(k, None)
                         st.session_state.data = data
                         save_user_data(st.session_state.user, data)
                         st.rerun()
@@ -770,7 +776,10 @@ def admin_panel():
                 else:
                     ok, msg = reset_password(target, a_new)
                     if ok:
+                        for k in ("adm_new", "adm_conf"):
+                            st.session_state.pop(k, None)
                         st.success(msg)
+                        st.rerun()
                     else:
                         st.error(msg)
     with col_a:
@@ -781,7 +790,10 @@ def admin_panel():
                 ok, msg = signup(a_user.strip(), a_pw)
                 if ok:
                     save_user_data(a_user.strip(), default_data())
+                    for k in ("adm_add_user", "adm_add_pw"):
+                        st.session_state.pop(k, None)
                     st.success(msg)
+                    st.rerun()
                 else:
                     st.error(msg)
     with col_d:
