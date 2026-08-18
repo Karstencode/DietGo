@@ -1,6 +1,7 @@
 import calendar
 import json
 import os
+import re
 import tempfile
 import unittest
 from datetime import date, timedelta
@@ -8,7 +9,11 @@ from main import (
     Value, FoodEntry, DietDay, SpendingEntry, CategoryLimit,
     compute_streaks, compute_budget_streaks, categories_satisfied, diet_rank, diet_score,
 )
+from streamlit.testing.v1 import AppTest
+import main as core
 import app as webapp
+
+APP_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "app.py")
 
 TMP_DATA = os.path.join(tempfile.gettempdir(), "diet_budget_test_data.json")
 
@@ -426,6 +431,14 @@ class TestLeaderboards(unittest.TestCase):
         ok, _ = webapp.rename_user("alice", "alice")
         self.assertTrue(ok)
 
+    def test_rename_admin_blocked(self):
+        self.add_user("alice")
+        ok, key = webapp.rename_user(webapp.ADMIN_USER, "root")
+        self.assertFalse(ok)
+        self.assertEqual(key, "cannot_rename_admin")
+        self.assertNotIn("root", webapp.all_usernames())
+        self.assertIn("alice", webapp.all_usernames())
+
     def test_rank_users_orders_by_score(self):
         for name in ("alice", "bob"):
             self.add_user(name)
@@ -440,6 +453,85 @@ class TestLeaderboards(unittest.TestCase):
         self.assertEqual(ranked[0][0], "alice")
         self.assertEqual(ranked[0][4], webapp.diet_score(2, 0, 0))
         self.assertEqual(ranked[-1][0], "bob")
+
+
+class TestAdminRestrictions(unittest.TestCase):
+    """Admin sees users + leaderboard settings only: no diet/budget add,
+    no leaderboard create/join forms."""
+
+    DB = os.path.join(tempfile.gettempdir(), "diet_budget_test_admin.db")
+
+    def setUp(self):
+        webapp.DB_PATH = self.DB
+        if os.path.exists(self.DB):
+            os.remove(self.DB)
+        webapp.init_db()
+        webapp.ensure_admin()
+        self.at = AppTest.from_file(APP_PATH)
+        self.at.run(timeout=60)
+        self.at.session_state["user"] = webapp.ADMIN_USER
+        self.at.session_state["data"] = webapp.default_data()
+        self.at.run(timeout=60)
+
+    def tearDown(self):
+        if os.path.exists(self.DB):
+            os.remove(self.DB)
+
+    def boot(self, user):
+        at = AppTest.from_file(APP_PATH)
+        at.run(timeout=60)
+        at.session_state["user"] = user
+        at.session_state["data"] = webapp.default_data()
+        at.run(timeout=60)
+        return at
+
+    def test_admin_has_no_diet_budget_tabs(self):
+        labels = [tab.label for tab in self.at.tabs]
+        self.assertNotIn("Diet", labels)
+        self.assertNotIn("Budget", labels)
+
+    def test_admin_has_no_add_buttons(self):
+        for b in self.at.button:
+            self.assertNotEqual(b.label.strip().lower(), "add")
+
+    def test_admin_has_no_leaderboard_forms(self):
+        keys = {t.key for t in self.at.text_input}
+        self.assertFalse(keys & {"lb_name", "lb_code", "jb_name", "jb_code"})
+
+    def test_admin_has_admin_panels(self):
+        labels = [e.label for e in self.at.expander]
+        self.assertTrue(any("Admin panel" in l for l in labels))
+        self.assertTrue(any("Leaderboards" in l for l in labels))
+
+    def test_normal_user_still_has_everything(self):
+        salt = os.urandom(16).hex()
+        with webapp.get_db() as conn:
+            conn.execute("INSERT INTO users (username, salt, hash) VALUES (?,?,?)",
+                         ("bob", salt, webapp.hash_password("pw", salt)))
+        at = self.boot("bob")
+        tab_labels = [tab.label for tab in at.tabs]
+        self.assertIn("Diet", tab_labels)
+        self.assertIn("Budget", tab_labels)
+        keys = {t.key for t in at.text_input}
+        self.assertTrue(keys & {"lb_name", "lb_code", "jb_name", "jb_code"})
+        self.assertTrue(any("Add item" in b.label for b in at.button))
+        self.assertFalse(any("Admin panel" in e.label for e in at.expander))
+
+
+class TestTranslationCoverage(unittest.TestCase):
+    """Every tr(...) key used in app.py must exist in both languages."""
+
+    def test_all_tr_keys_covered_in_both_langs(self):
+        src = open(APP_PATH, encoding="utf-8").read()
+        keys = set(re.findall(r'tr\(["\']([^"\']+)["\']\)', src))
+        self.assertTrue(keys)
+        missing_en = {k for k in keys if k not in core.STRINGS["en"]}
+        missing_zh = {k for k in keys if k not in core.STRINGS["zh"]}
+        self.assertEqual(missing_en, set(), f"missing EN keys: {sorted(missing_en)}")
+        self.assertEqual(missing_zh, set(), f"missing ZH keys: {sorted(missing_zh)}")
+
+    def test_dicts_are_symmetric(self):
+        self.assertEqual(set(core.STRINGS["en"]), set(core.STRINGS["zh"]))
 
 
 if __name__ == "__main__":

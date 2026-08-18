@@ -223,6 +223,8 @@ def change_access_code(lid, new_code):
 
 def rename_user(old, new):
     """Rename an account, moving its data and leaderboard memberships."""
+    if old.strip() == ADMIN_USER:
+        return False, "cannot_rename_admin"
     if not new.strip():
         return False, "username_empty"
     if old == new:
