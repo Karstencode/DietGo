@@ -17,7 +17,8 @@ DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "streamlit_da
 
 
 def tr(key):
-    return STRINGS[st.session_state.lang][key]
+    lang = st.session_state.get("lang", "en")
+    return STRINGS[lang][key]
 
 
 # ------------------------------------------------------------- database
@@ -71,6 +72,16 @@ def signin(username, password):
     if hash_password(password, salt) != expected:
         return False, tr("wrong_password")
     return True, tr("signed_in")
+
+
+def delete_account(username, password):
+    """Delete the account and its data after password check."""
+    if not signin(username, password)[0]:
+        return False, tr("wrong_password")
+    with get_db() as conn:
+        conn.execute("DELETE FROM users WHERE username = ?", (username,))
+        conn.execute("DELETE FROM user_data WHERE username = ?", (username,))
+    return True, tr("account_deleted")
 
 
 def default_data():
@@ -361,10 +372,51 @@ def categories_manager(data):
                     st.rerun()
 
         removable = [k for k in data["diet_categories"] if k != "calories"]
+        editable = list(data["diet_categories"].keys())
+        with st.form("edit_category"):
+            to_edit = st.selectbox(tr("category"), editable, key="ec_sel")
+            current = data["diet_categories"][to_edit]
+            new_name = st.text_input(tr("category_name"), value=current["name"], key="ec_name")
+            new_unit = st.text_input(tr("unit"), value=current["unit"], key="ec_unit")
+            new_limit = st.number_input(tr("daily_limit"), min_value=0, step=1,
+                                        value=int(current["limit"]), key="ec_limit")
+            if st.form_submit_button(tr("edit_category")):
+                if not new_name.strip():
+                    st.error(tr("name_empty"))
+                elif to_edit == "calories":
+                    edited = data["diet_categories"]["calories"]
+                    edited["unit"] = new_unit.strip() or "kcal"
+                    edited["limit"] = int(new_limit)
+                    st.session_state.data = data
+                    save_user_data(st.session_state.user, data)
+                    st.rerun()
+                else:
+                    new_key = new_name.strip().lower()
+                    if new_key != to_edit and new_key in data["diet_categories"]:
+                        st.error(tr("category_exists"))
+                    else:
+                        if new_key != to_edit:
+                            data["diet_categories"][new_key] = data["diet_categories"].pop(to_edit)
+                            for iso, entries in data["days"].items():
+                                for e in entries:
+                                    if to_edit in e.get("extras", {}):
+                                        e["extras"][new_key] = e["extras"].pop(to_edit)
+                        edited = data["diet_categories"][new_key]
+                        edited["name"] = new_name.strip()
+                        edited["unit"] = new_unit.strip() or "g"
+                        edited["limit"] = int(new_limit)
+                        st.session_state.data = data
+                        save_user_data(st.session_state.user, data)
+                        st.rerun()
+
+        removable = [k for k in data["diet_categories"] if k != "calories"]
         if removable:
             to_rm = st.selectbox(tr("remove_category"), removable, key="rm_category")
             if st.button(tr("remove_category")):
                 del data["diet_categories"][to_rm]
+                for iso, entries in data["days"].items():
+                    for e in entries:
+                        e.get("extras", {}).pop(to_rm, None)
                 st.session_state.data = data
                 save_user_data(st.session_state.user, data)
                 st.rerun()
@@ -606,6 +658,22 @@ def main():
             st.session_state.user = None
             st.session_state.data = default_data()
             st.rerun()
+
+        with st.expander(tr("delete_account")):
+            conf = st.text_input(tr("confirm_username"))
+            del_pw = st.text_input(tr("password"), type="password", key="del_pw")
+            if st.button(tr("delete_account"), key="del_btn"):
+                if conf.strip() != st.session_state.user:
+                    st.error(tr("username_mismatch"))
+                else:
+                    ok, msg = delete_account(st.session_state.user, del_pw)
+                    if ok:
+                        st.success(msg)
+                        st.session_state.user = None
+                        st.session_state.data = default_data()
+                        st.rerun()
+                    else:
+                        st.error(msg)
 
     st.title(tr("app_title"))
     render_app(st.session_state.data)

@@ -32,6 +32,7 @@ STRINGS = {
         "daily_limit": "Daily limit",
         "category_limits": "Category limits",
         "add_category": "Add category",
+        "edit_category": "Edit category",
         "remove_category": "Remove category",
         "category_name": "Category name",
         "unit": "Unit",
@@ -77,6 +78,10 @@ STRINGS = {
         "wrong_password": "Incorrect password.",
         "account_created": "Account created.",
         "signed_in": "Signed in.",
+        "delete_account": "Delete account",
+        "confirm_username": "Type your username to confirm",
+        "username_mismatch": "Username does not match.",
+        "account_deleted": "Account deleted.",
         "add_new": "— add new —",
         "entry": "Entry",
         "remove_entry": "Remove entry",
@@ -130,6 +135,7 @@ STRINGS = {
         "daily_limit": "每日限制",
         "category_limits": "類別限制",
         "add_category": "新增類別",
+        "edit_category": "編輯類別",
         "remove_category": "移除類別",
         "category_name": "類別名稱",
         "unit": "單位",
@@ -175,6 +181,10 @@ STRINGS = {
         "wrong_password": "密碼錯誤。",
         "account_created": "帳戶已建立。",
         "signed_in": "已登入。",
+        "delete_account": "刪除帳戶",
+        "confirm_username": "輸入用戶名以確認",
+        "username_mismatch": "用戶名不匹配。",
+        "account_deleted": "帳戶已刪除。",
         "add_new": "— 新增 —",
         "entry": "記錄",
         "remove_entry": "刪除記錄",
@@ -615,6 +625,7 @@ class DietTrackerApp:
         cat_row = tk.Frame(cat_frame)
         cat_row.pack(fill="x", pady=(4, 0))
         tk.Button(cat_row, text=self.tr("add_category"), command=self.add_category).pack(side="left")
+        tk.Button(cat_row, text=self.tr("edit_category"), command=self.edit_category).pack(side="left", padx=4)
         tk.Button(cat_row, text=self.tr("remove_category"), command=self.remove_category).pack(side="left", padx=4)
 
         self.date_label = tk.Label(left, text="", font=("Arial", 11, "bold"), pady=10)
@@ -803,6 +814,72 @@ class DietTrackerApp:
         buttons = tk.Frame(dialog)
         buttons.pack(pady=(0, 10))
         tk.Button(buttons, text=self.tr("add"), command=save).pack(side="left")
+        tk.Button(buttons, text=self.tr("cancel"), command=dialog.destroy).pack(side="left", padx=8)
+        dialog.bind("<Return>", save)
+        dialog.bind("<Escape>", lambda _e: dialog.destroy())
+
+    def edit_category(self):
+        selection = self.category_list.curselection()
+        if not selection:
+            messagebox.showwarning("Warning", self.tr("warn_select"))
+            return
+        key = self.category_keys[selection[0]]
+        cat = self.diet_categories[key]
+
+        dialog = tk.Toplevel(self.root)
+        dialog.title(self.tr("edit_category"))
+        dialog.geometry("320x180")
+        dialog.transient(self.root)
+        dialog.grab_set()
+
+        frame = tk.Frame(dialog)
+        frame.pack(fill="both", expand=True, padx=14, pady=10)
+
+        tk.Label(frame, text=self.tr("category_name") + ":").grid(row=0, column=0, sticky="w")
+        name_var = tk.StringVar(value=cat.name)
+        tk.Entry(frame, textvariable=name_var).grid(row=0, column=1, sticky="we", pady=3)
+
+        tk.Label(frame, text=self.tr("unit") + ":").grid(row=1, column=0, sticky="w")
+        unit_var = tk.StringVar(value=cat.unit)
+        ttk.Combobox(frame, textvariable=unit_var, values=("g", "portions", "kcal", "mg")).grid(
+            row=1, column=1, sticky="we", pady=3
+        )
+
+        tk.Label(frame, text=self.tr("daily_limit") + ":").grid(row=2, column=0, sticky="w")
+        limit_var = tk.StringVar(value=str(cat.limit))
+        tk.Entry(frame, textvariable=limit_var).grid(row=2, column=1, sticky="we", pady=3)
+
+        def save(_event=None):
+            name = name_var.get().strip()
+            if not name:
+                messagebox.showerror("Error", self.tr("name_empty"), parent=dialog)
+                return
+            try:
+                limit = int(limit_var.get().strip())
+            except ValueError:
+                messagebox.showerror("Error", self.tr("err_invalid_number"), parent=dialog)
+                return
+            new_key = key if key == "calories" else name.lower()
+            if new_key != key and new_key in self.diet_categories:
+                messagebox.showerror("Error", self.tr("err_already_exists"), parent=dialog)
+                return
+            if new_key != key:
+                self.diet_categories[new_key] = self.diet_categories.pop(key)
+                for day in self.days.values():
+                    for entry in day.entries:
+                        if key in entry.extras:
+                            entry.extras[new_key] = entry.extras.pop(key)
+            edited = self.diet_categories[new_key]
+            edited.name = name
+            edited.unit = unit_var.get().strip() or "g"
+            edited.limit = limit
+            self.refresh_all()
+            dialog.destroy()
+
+        frame.columnconfigure(1, weight=1)
+        buttons = tk.Frame(dialog)
+        buttons.pack(pady=(0, 10))
+        tk.Button(buttons, text=self.tr("save"), command=save).pack(side="left")
         tk.Button(buttons, text=self.tr("cancel"), command=dialog.destroy).pack(side="left", padx=8)
         dialog.bind("<Return>", save)
         dialog.bind("<Escape>", lambda _e: dialog.destroy())
