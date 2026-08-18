@@ -179,6 +179,15 @@ def leaderboard_members(lid):
         ).fetchall()]
 
 
+def leave_leaderboard(lid, username):
+    """Remove a user's membership; ranks recompute on next render."""
+    with get_db() as conn:
+        conn.execute(
+            "DELETE FROM memberships WHERE leaderboard_id = ? AND username = ?", (lid, username)
+        )
+    return True, "leaderboard_left"
+
+
 def delete_leaderboard(lid):
     """Delete a leaderboard and all its memberships, renumbering the rest so ids stay 1..N."""
     with get_db() as conn:
@@ -968,6 +977,24 @@ def leaderboards_section():
             tr("tier"): tr(rank_key),
         })
     st.caption(f"{tr('members')}: {', '.join(board['members']) or '—'}")
+    if st.session_state.get(f"lb_leave_conf_{board['id']}"):
+        st.warning(tr("leave_confirm"))
+        c1, c2 = st.columns(2)
+        with c1:
+            if st.button(tr("confirm"), key=f"lb_leave_yes_{board['id']}"):
+                leave_leaderboard(board["id"], st.session_state.user)
+                st.session_state.pop(f"lb_leave_conf_{board['id']}", None)
+                st.session_state.pop("lb_dd", None)
+                st.success(tr("leaderboard_left"))
+                st.rerun()
+        with c2:
+            if st.button(tr("cancel"), key=f"lb_leave_no_{board['id']}"):
+                st.session_state.pop(f"lb_leave_conf_{board['id']}", None)
+                st.rerun()
+    else:
+        if st.button(tr("leave_leaderboard"), key=f"lb_leave_{board['id']}"):
+            st.session_state[f"lb_leave_conf_{board['id']}"] = True
+            st.rerun()
     with st.container(height=460):
         if rows:
             st.table(rows)

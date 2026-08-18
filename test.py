@@ -429,6 +429,28 @@ class TestLeaderboards(unittest.TestCase):
         self.assertEqual(webapp.create_leaderboard("A", "2", "bob")[0], False)
         self.assertEqual(webapp.join_leaderboard("A", "1", "alice")[1], "already_member")
 
+    def test_leave_leaderboard_recomputes_ranks(self):
+        self.add_user("alice")
+        self.add_user("bob")
+        webapp.create_leaderboard("A", "1", "alice")
+        webapp.join_leaderboard("A", "1", "bob")
+        today = date.today()
+        entry = {"name": "Salad", "meal": "lunch", "calories": 100, "amount": None, "extras": {}}
+        data = webapp.load_user_data("bob")
+        data["days"][today.isoformat()] = [entry]
+        webapp.save_user_data("bob", data)
+
+        board = webapp.all_leaderboards()[0]
+        self.assertEqual([r[0] for r in webapp.rank_users(board["members"])], ["bob", "alice"])
+        ok, key = webapp.leave_leaderboard(board["id"], "bob")
+        self.assertTrue(ok)
+        self.assertEqual(key, "leaderboard_left")
+        board = webapp.all_leaderboards()[0]
+        self.assertEqual(board["members"], ["alice"])
+        self.assertEqual([r[0] for r in webapp.rank_users(board["members"])], ["alice"])
+        self.assertEqual(webapp.my_leaderboards("bob"), [])
+        self.assertEqual(webapp.my_leaderboards("alice")[0]["name"], "A")
+
     def test_rename_and_change_code(self):
         self.add_user("alice")
         ok, _ = webapp.create_leaderboard("A", "1", "alice")
@@ -618,6 +640,24 @@ class TestUserLeaderboardUI(unittest.TestCase):
         self.at.run(timeout=60)
         self.assertGreaterEqual(len(self.at.table), 1)
         self.assertIn("bob", str(self.at.table[0].value))
+
+    def test_leave_leaderboard_flow(self):
+        webapp.create_leaderboard("Team A", "x", "bob")
+        self.at.run(timeout=60)
+        dd = [s for s in self.at.selectbox if s.key == "lb_dd"][0]
+        team_opt = [o for o in dd.options if "Team A" in o][0]
+        dd.set_value(team_opt)
+        self.at.run(timeout=60)
+        self.assertTrue(any("Leave leaderboard" in b.label for b in self.at.button))
+        [b for b in self.at.button if b.key == "lb_leave_1"][0].click()
+        self.at.run(timeout=60)
+        self.assertTrue(any("Leave this leaderboard" in w.value for w in self.at.warning))
+        [b for b in self.at.button if b.key == "lb_leave_yes_1"][0].click()
+        self.at.run(timeout=60)
+        self.assertEqual(webapp.my_leaderboards("bob"), [])
+        dd = [s for s in self.at.selectbox if s.key == "lb_dd"][0]
+        self.assertFalse(any("Team A" in o for o in dd.options))
+        self.assertEqual(dd.index, 0)
 
 
 class TestTranslationCoverage(unittest.TestCase):
