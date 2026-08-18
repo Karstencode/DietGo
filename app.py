@@ -56,6 +56,15 @@ def init_db():
             "CREATE TABLE IF NOT EXISTS user_data "
             "(username TEXT PRIMARY KEY, json TEXT)"
         )
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS leaderboards "
+            "(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, access_code TEXT NOT NULL)"
+        )
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS memberships "
+            "(leaderboard_id INTEGER NOT NULL, username TEXT NOT NULL, "
+            "PRIMARY KEY (leaderboard_id, username))"
+        )
 
 
 def hash_password(password, salt_hex):
@@ -119,6 +128,128 @@ def reset_password(username, new_password):
             (salt, hash_password(new_password, salt), username),
         )
     return True, tr("password_reset")
+
+
+# ---------------------------------------------------------- leaderboards
+
+def create_leaderboard(name, code, username):
+    """Create a leaderboard owned by `username` (also its first member)."""
+    if not name or not code:
+        return False, "name_empty"
+    with get_db() as conn:
+        if conn.execute("SELECT 1 FROM leaderboards WHERE name = ?", (name,)).fetchone():
+            return False, "leaderboard_exists"
+        cur = conn.execute(
+            "INSERT INTO leaderboards (name, access_code) VALUES (?, ?)", (name, code)
+        )
+        conn.execute(
+            "INSERT INTO memberships (leaderboard_id, username) VALUES (?, ?)",
+            (cur.lastrowid, username),
+        )
+    return True, "leaderboard_created"
+
+
+def join_leaderboard(name, code, username):
+    """Join an existing leaderboard by name + access code."""
+    if not name or not code:
+        return False, "wrong_access_code"
+    with get_db() as conn:
+        row = conn.execute(
+            "SELECT id FROM leaderboards WHERE name = ? AND access_code = ?", (name, code)
+        ).fetchone()
+        if not row:
+            return False, "wrong_access_code"
+        lid = row[0]
+        if conn.execute(
+            "SELECT 1 FROM memberships WHERE leaderboard_id = ? AND username = ?",
+            (lid, username),
+        ).fetchone():
+            return False, "already_member"
+        conn.execute(
+            "INSERT INTO memberships (leaderboard_id, username) VALUES (?, ?)", (lid, username)
+        )
+    return True, "leaderboard_joined"
+
+
+def leaderboard_members(lid):
+    with get_db() as conn:
+        return [r[0] for r in conn.execute(
+            "SELECT username FROM memberships WHERE leaderboard_id = ? ORDER BY username", (lid,)
+        ).fetchall()]
+
+
+def my_leaderboards(username):
+    with get_db() as conn:
+        rows = conn.execute(
+            "SELECT l.id, l.name, l.access_code FROM leaderboards l "
+            "JOIN memberships m ON m.leaderboard_id = l.id "
+            "WHERE m.username = ? ORDER BY l.name",
+            (username,),
+        ).fetchall()
+    boards = []
+    for lid, name, code in rows:
+        members = leaderboard_members(lid)
+        boards.append({"id": lid, "name": name, "access_code": code,
+                       "members": members, "member_count": len(members)})
+    return boards
+
+
+def all_leaderboards():
+    with get_db() as conn:
+        rows = conn.execute("SELECT id, name, access_code FROM leaderboards ORDER BY name").fetchall()
+    boards = []
+    for lid, name, code in rows:
+        members = leaderboard_members(lid)
+        boards.append({"id": lid, "name": name, "access_code": code,
+                       "members": members, "member_count": len(members)})
+    return boards
+
+
+def rename_leaderboard(lid, new_name):
+    if not new_name:
+        return False, "name_empty"
+    with get_db() as conn:
+        conn.execute("UPDATE leaderboards SET name = ? WHERE id = ?", (new_name, lid))
+    return True, "leaderboard_created"
+
+
+def change_access_code(lid, new_code):
+    if not new_code:
+        return False, "name_empty"
+    with get_db() as conn:
+        conn.execute("UPDATE leaderboards SET access_code = ? WHERE id = ?", (new_code, lid))
+    return True, "leaderboard_created"
+
+
+def rename_user(old, new):
+    """Rename an account, moving its data and leaderboard memberships."""
+    if not new.strip():
+        return False, "username_empty"
+    if old == new:
+        return True, "username_changed"
+    with get_db() as conn:
+        if not conn.execute("SELECT 1 FROM users WHERE username = ?", (old,)).fetchone():
+            return False, "user_not_found"
+        if conn.execute("SELECT 1 FROM users WHERE username = ?", (new,)).fetchone():
+            return False, "username_exists"
+        conn.execute("UPDATE users SET username = ? WHERE username = ?", (new, old))
+        conn.execute("UPDATE user_data SET username = ? WHERE username = ?", (new, old))
+        conn.execute("UPDATE memberships SET username = ? WHERE username = ?", (new, old))
+    return True, "username_changed"
+
+
+def rank_users(usernames):
+    """Rank members by combined diet score as of today."""
+    board = []
+    today = date.today()
+    for user in usernames:
+        data = load_user_data(user)
+        day_s, week_s, month_s = compute_streaks(
+            build_all_days(data), diet_categories(data), today
+        )
+        board.append((user, day_s, week_s, month_s, diet_score(day_s, week_s, month_s)))
+    board.sort(key=lambda r: r[4], reverse=True)
+    return board
 
 
 def admin_password():
@@ -381,6 +512,8 @@ def food_form(data, day):
                 else:
                     data["days"].setdefault(iso, []).append(new_entry)
                 st.session_state.pop(f"food_edit_{iso}", None)
+                if is_edit:
+                    st.session_state[f"diet_view_{iso}"] = "list"
                 clear_keys([f"fd_{iso}_ext_{k}" for k in cats if k != "calories"])
                 st.session_state.data = data
                 save_user_data(st.session_state.user, data)
@@ -389,6 +522,7 @@ def food_form(data, day):
         if st.button(tr("cancel"), key=f"food_edit_cancel_{iso}"):
             clear_keys([f"fd_{iso}_ext_{k}" for k in cats if k != "calories"])
             st.session_state.pop(f"food_edit_{iso}", None)
+            st.session_state[f"diet_view_{iso}"] = "list"
             st.rerun()
 
 
@@ -432,6 +566,7 @@ def food_table(data, day, editable=True):
                           f"fd_{iso}_amt", f"fd_{iso}_unit"]:
                     st.session_state.pop(k, None)
                 st.session_state[f"food_edit_{iso}"] = i
+                st.session_state[f"diet_view_{iso}"] = "add"
                 st.rerun()
         with c3:
             if st.button(tr("remove"), key=f"food_rm_btn_{iso}_{i}"):
@@ -590,6 +725,8 @@ def spending_form(data, day):
                 else:
                     data["spends"].setdefault(iso, []).append(new_entry)
                 st.session_state.pop(f"spend_edit_{iso}", None)
+                if is_edit:
+                    st.session_state[f"budget_view_{iso}"] = "list"
                 clear_keys()
                 st.session_state.data = data
                 save_user_data(st.session_state.user, data)
@@ -598,6 +735,7 @@ def spending_form(data, day):
         if st.button(tr("cancel"), key=f"spend_edit_cancel_{iso}"):
             clear_keys()
             st.session_state.pop(f"spend_edit_{iso}", None)
+            st.session_state[f"budget_view_{iso}"] = "list"
             st.rerun()
 
 
@@ -624,6 +762,7 @@ def spending_table(data, day, editable=True):
                 for k in [f"sp_{iso}_name", f"sp_{iso}_cat", f"sp_{iso}_price"]:
                     st.session_state.pop(k, None)
                 st.session_state[f"spend_edit_{iso}"] = i
+                st.session_state[f"budget_view_{iso}"] = "add"
                 st.rerun()
         with c3:
             if st.button(tr("remove"), key=f"spend_rm_btn_{iso}_{i}"):
@@ -656,8 +795,25 @@ def render_diet_section(data, selected):
     st.markdown(f"#### {tr('diet')}")
     with st.expander(tr("category_limits")):
         categories_manager(data)
-    food_form(data, selected)
-    food_table(data, selected)
+
+    iso = selected.isoformat()
+    view = st.session_state.setdefault(f"diet_view_{iso}", "list")
+    c1, c2 = st.columns(2)
+    with c1:
+        if st.button("➕ " + tr("add_item"), key=f"diet_go_add_{iso}",
+                     type="primary" if view == "add" else "secondary"):
+            st.session_state[f"diet_view_{iso}"] = "add"
+            st.rerun()
+    with c2:
+        if st.button("📝 " + tr("display_edit"), key=f"diet_go_list_{iso}",
+                     type="primary" if view == "list" else "secondary"):
+            st.session_state[f"diet_view_{iso}"] = "list"
+            st.rerun()
+
+    if view == "add":
+        food_form(data, selected)
+    else:
+        food_table(data, selected)
 
     day = build_day(data, selected)
     cats = diet_categories(data)
@@ -697,8 +853,24 @@ def render_budget_section(data, selected):
             save_user_data(st.session_state.user, data)
             st.rerun()
 
-    spending_form(data, selected)
-    spending_table(data, selected)
+    iso = selected.isoformat()
+    view = st.session_state.setdefault(f"budget_view_{iso}", "list")
+    c1, c2 = st.columns(2)
+    with c1:
+        if st.button("➕ " + tr("add_item"), key=f"budget_go_add_{iso}",
+                     type="primary" if view == "add" else "secondary"):
+            st.session_state[f"budget_view_{iso}"] = "add"
+            st.rerun()
+    with c2:
+        if st.button("📝 " + tr("display_edit"), key=f"budget_go_list_{iso}",
+                     type="primary" if view == "list" else "secondary"):
+            st.session_state[f"budget_view_{iso}"] = "list"
+            st.rerun()
+
+    if view == "add":
+        spending_form(data, selected)
+    else:
+        spending_table(data, selected)
 
     spends = spends_objects(data)
     period = data["budget_period"]
@@ -714,44 +886,57 @@ def render_budget_section(data, selected):
     st.write("  |  ".join(f"{labels[k]}: {v}" for k, v in streaks.items()))
 
 
-def leaderboard():
-    """Rank every user by their combined diet score, as of today."""
-    with get_db() as conn:
-        rows = conn.execute("SELECT username, json FROM user_data").fetchall()
-    board = []
-    today = date.today()
-    for user, json_str in rows:
-        try:
-            data = json.loads(json_str)
-        except json.JSONDecodeError:
-            continue
-        day_s, week_s, month_s = compute_streaks(
-            build_all_days(data), diet_categories(data), today
-        )
-        board.append((user, day_s, week_s, month_s, diet_score(day_s, week_s, month_s)))
-    board.sort(key=lambda r: r[4], reverse=True)
-    return board
+def leaderboards_section():
+    """Create/join leaderboards and show rankings of the boards you're in."""
+    st.markdown(f"### 🏆 {tr('leaderboards')}")
+    c1, c2 = st.columns(2)
+    with c1:
+        with st.form("lb_create"):
+            lb_name = st.text_input(tr("leaderboard_name"), key="lb_name")
+            lb_code = st.text_input(tr("access_code"), type="password", key="lb_code")
+            if st.form_submit_button(tr("create_leaderboard")):
+                ok, key = create_leaderboard(lb_name.strip(), lb_code.strip(), st.session_state.user)
+                if ok:
+                    for k in ("lb_name", "lb_code"):
+                        st.session_state.pop(k, None)
+                    st.success(tr(key))
+                    st.rerun()
+                else:
+                    st.error(tr(key))
+    with c2:
+        with st.form("lb_join"):
+            jb_name = st.text_input(tr("leaderboard_name"), key="jb_name")
+            jb_code = st.text_input(tr("access_code"), type="password", key="jb_code")
+            if st.form_submit_button(tr("join_leaderboard")):
+                ok, key = join_leaderboard(jb_name.strip(), jb_code.strip(), st.session_state.user)
+                if ok:
+                    for k in ("jb_name", "jb_code"):
+                        st.session_state.pop(k, None)
+                    st.success(tr(key))
+                    st.rerun()
+                else:
+                    st.error(tr(key))
 
-
-def leaderboard_table():
-    board = leaderboard()
-    if not board:
-        st.write(tr("no_users_yet"))
+    boards = my_leaderboards(st.session_state.user)
+    if not boards:
+        st.info(tr("no_leaderboards"))
         return
-    rows = []
-    for place, (user, d, w, m, score) in enumerate(board, start=1):
-        mark = " ★" if user == st.session_state.user else ""
-        rank_key, _ = diet_rank(d, w, m)
-        rows.append({
-            tr("rank_title"): place,
-            tr("user"): user + mark,
-            tr("day"): d,
-            tr("week"): w,
-            tr("month"): m,
-            tr("score"): score,
-            tr("tier"): tr(rank_key),
-        })
-    st.table(rows)
+    for board in boards:
+        with st.expander(f"🏆 {board['name']} · {board['member_count']} {tr('members')}"):
+            rows = []
+            for place, (user, d, w, m, score) in enumerate(rank_users(board["members"]), start=1):
+                mark = " ★" if user == st.session_state.user else ""
+                rank_key, _ = diet_rank(d, w, m)
+                rows.append({
+                    tr("rank_title"): place,
+                    tr("user"): user + mark,
+                    tr("day"): d,
+                    tr("week"): w,
+                    tr("month"): m,
+                    tr("score"): score,
+                    tr("tier"): tr(rank_key),
+                })
+            st.table(rows)
 
 
 def admin_panel():
@@ -807,6 +992,49 @@ def admin_panel():
         else:
             st.caption(tr("admin"))
 
+    st.divider()
+    with st.form("adm_rename"):
+        ren_old = st.text_input(tr("username"), key="ren_old")
+        ren_new = st.text_input(tr("new_username"), key="ren_new")
+        if st.form_submit_button(tr("rename_user")):
+            ok, key = rename_user(ren_old.strip(), ren_new.strip())
+            if ok:
+                for k in ("ren_old", "ren_new"):
+                    st.session_state.pop(k, None)
+                st.success(tr(key))
+                st.rerun()
+            else:
+                st.error(tr(key))
+
+
+def admin_leaderboards():
+    """Admin view of every leaderboard: rename it or change its access code."""
+    st.markdown(f"### 🏆 {tr('leaderboards')}")
+    boards = all_leaderboards()
+    if not boards:
+        st.info(tr("no_leaderboards"))
+        return
+    for b in boards:
+        st.write(
+            f"**{b['name']}** (id {b['id']}) · {tr('access_code')}: `{b['access_code']}` · "
+            f"{tr('members')}: {', '.join(b['members']) or '—'}"
+        )
+        c1, c2 = st.columns(2)
+        with c1:
+            with st.form(f"adm_lb_name_{b['id']}"):
+                new_name = st.text_input(tr("leaderboard_name"), value=b["name"],
+                                         key=f"lbn_{b['id']}")
+                if st.form_submit_button(tr("change_name")):
+                    rename_leaderboard(b["id"], new_name.strip())
+                    st.rerun()
+        with c2:
+            with st.form(f"adm_lb_code_{b['id']}"):
+                new_code = st.text_input(tr("access_code"), value=b["access_code"],
+                                         key=f"lbc_{b['id']}")
+                if st.form_submit_button(tr("change_code")):
+                    change_access_code(b["id"], new_code.strip())
+                    st.rerun()
+
 
 def admin_show_date(data, day):
     """Read-only view of one user's diet/budget records for a chosen day."""
@@ -836,6 +1064,8 @@ def admin_show_date(data, day):
 def render_admin_view():
     with st.expander("🛡️ " + tr("admin_panel"), expanded=True):
         admin_panel()
+    with st.expander("🏆 " + tr("leaderboards")):
+        admin_leaderboards()
     target = st.session_state.get("adm_target")
     query = (st.session_state.get("adm_search") or "").strip().lower()
     if not target or (query and query not in target.lower()):
@@ -865,8 +1095,7 @@ def render_app(data):
     if st.session_state.user == ADMIN_USER:
         render_admin_view()
         return
-    with st.expander("🏆 " + tr("leaderboard")):
-        leaderboard_table()
+    leaderboards_section()
     selected = calendar_widget(
         "global", lambda d: (diet_status(data, d), budget_status(data, d))
     )

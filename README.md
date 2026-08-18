@@ -31,9 +31,14 @@ interfaces: **English** and **繁體中文 (Traditional Chinese)**.
 
   Score = `day_streak + week_streak × 7 + month_streak × 30`.
 
-- 🏆 **Leaderboard**: ranks every registered user by their combined diet score.
+- 🏆 **Leaderboards**: any user can **create** or **join** a private leaderboard
+  (by name + access code). Each board ranks its members by their combined diet
+  score in the top‑to‑bottom order
+  (`Score = day_streak + week_streak × 7 + month_streak × 30`).
 - 🟢 Calendar day colouring: green = within limits, red = over, grey = no data.
 - 👤 Per-user accounts with salted password hashes (web version).
+- 📱 Mobile-friendly web UI: the diet/budget day panels switch between a big
+  **Add** button (entry form) and a **Display/Edit** button (list + edit/remove).
 
 ## Run locally (web)
 
@@ -62,6 +67,8 @@ view any user's records (searchable list), and only **admin** can:
 - reset any user's password
 - delete accounts
 - add accounts
+- rename any username (leaderboard memberships follow)
+- rename any leaderboard or change its access code
 
 Set the admin password via the `ADMIN_PASSWORD` environment variable or in
 `.streamlit/secrets.toml` (`admin_password`). Otherwise it defaults to

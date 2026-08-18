@@ -1,4 +1,5 @@
 import calendar
+import json
 import os
 import tempfile
 import unittest
@@ -7,6 +8,7 @@ from main import (
     Value, FoodEntry, DietDay, SpendingEntry, CategoryLimit,
     compute_streaks, compute_budget_streaks, categories_satisfied, diet_rank, diet_score,
 )
+import app as webapp
 
 TMP_DATA = os.path.join(tempfile.gettempdir(), "diet_budget_test_data.json")
 
@@ -335,6 +337,109 @@ def _logged(kcal, sugar=None):
     extras = {"sugar": Value(sugar, "g")} if sugar is not None else {}
     day.add_entry(FoodEntry("Test Food", "lunch", Value(kcal, "kcal"), extras=extras))
     return day
+
+
+class TestLeaderboards(unittest.TestCase):
+    DB = os.path.join(tempfile.gettempdir(), "diet_budget_test_leaders.db")
+
+    def setUp(self):
+        webapp.DB_PATH = self.DB
+        if os.path.exists(self.DB):
+            os.remove(self.DB)
+        webapp.init_db()
+
+    def tearDown(self):
+        if os.path.exists(self.DB):
+            os.remove(self.DB)
+
+    def add_user(self, name):
+        salt = os.urandom(16).hex()
+        with webapp.get_db() as conn:
+            conn.execute("INSERT INTO users (username, salt, hash) VALUES (?,?,?)",
+                         (name, salt, "0" * 64))
+            conn.execute("INSERT INTO user_data (username, json) VALUES (?,?)",
+                         (name, json.dumps(webapp.default_data())))
+
+    def test_create_and_join(self):
+        self.add_user("alice")
+        self.add_user("bob")
+        ok, key = webapp.create_leaderboard("Weight Loss", "abc123", "alice")
+        self.assertTrue(ok)
+        self.assertEqual(key, "leaderboard_created")
+        my = webapp.my_leaderboards("alice")
+        self.assertEqual(len(my), 1)
+        self.assertEqual(my[0]["name"], "Weight Loss")
+        self.assertEqual(my[0]["members"], ["alice"])
+
+        ok, key = webapp.join_leaderboard("Weight Loss", "abc123", "bob")
+        self.assertTrue(ok)
+        self.assertEqual(webapp.all_leaderboards()[0]["members"], ["alice", "bob"])
+        self.assertEqual(webapp.all_leaderboards()[0]["member_count"], 2)
+
+    def test_wrong_code_or_name(self):
+        self.add_user("alice")
+        webapp.create_leaderboard("Weight Loss", "abc123", "alice")
+        self.assertEqual(webapp.join_leaderboard("Weight Loss", "nope", "alice")[1],
+                         "wrong_access_code")
+        self.assertEqual(webapp.join_leaderboard("Nope", "abc123", "alice")[1],
+                         "wrong_access_code")
+
+    def test_duplicate_name_and_already_member(self):
+        self.add_user("alice")
+        self.add_user("bob")
+        webapp.create_leaderboard("A", "1", "alice")
+        self.assertEqual(webapp.create_leaderboard("A", "2", "bob")[0], False)
+        self.assertEqual(webapp.join_leaderboard("A", "1", "alice")[1], "already_member")
+
+    def test_rename_and_change_code(self):
+        self.add_user("alice")
+        ok, _ = webapp.create_leaderboard("A", "1", "alice")
+        self.assertTrue(ok)
+        lid = webapp.all_leaderboards()[0]["id"]
+        webapp.rename_leaderboard(lid, "B")
+        webapp.change_access_code(lid, "2")
+        board = webapp.all_leaderboards()[0]
+        self.assertEqual(board["name"], "B")
+        self.assertEqual(board["access_code"], "2")
+
+    def test_rename_user(self):
+        self.add_user("alice")
+        self.add_user("bob")
+        webapp.create_leaderboard("A", "1", "alice")
+        webapp.join_leaderboard("A", "1", "bob")
+
+        ok, key = webapp.rename_user("alice", "alice2")
+        self.assertTrue(ok)
+        self.assertEqual(key, "username_changed")
+        self.assertIn("alice2", webapp.all_usernames())
+        self.assertNotIn("alice", webapp.all_usernames())
+        members = webapp.all_leaderboards()[0]["members"]
+        self.assertIn("alice2", members)
+        self.assertIn("bob", members)
+
+        self.assertEqual(webapp.rename_user("ghost", "x")[1], "user_not_found")
+        self.assertEqual(webapp.rename_user("alice2", "bob")[1], "username_exists")
+        self.assertEqual(webapp.rename_user("bob", "   ")[1], "username_empty")
+
+    def test_rename_to_same_is_noop(self):
+        self.add_user("alice")
+        ok, _ = webapp.rename_user("alice", "alice")
+        self.assertTrue(ok)
+
+    def test_rank_users_orders_by_score(self):
+        for name in ("alice", "bob"):
+            self.add_user(name)
+        today = date.today()
+        entry = {"name": "Salad", "meal": "lunch", "calories": 100, "amount": None, "extras": {}}
+        data = webapp.load_user_data("alice")
+        data["days"][today.isoformat()] = [entry]
+        data["days"][(today - timedelta(days=1)).isoformat()] = [entry]
+        webapp.save_user_data("alice", data)
+
+        ranked = webapp.rank_users(["bob", "alice"])
+        self.assertEqual(ranked[0][0], "alice")
+        self.assertEqual(ranked[0][4], webapp.diet_score(2, 0, 0))
+        self.assertEqual(ranked[-1][0], "bob")
 
 
 if __name__ == "__main__":
