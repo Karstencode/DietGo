@@ -18,7 +18,8 @@ DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "streamlit_da
 
 def tr(key):
     lang = st.session_state.get("lang", "en")
-    return STRINGS[lang][key]
+    table = STRINGS.get(lang, STRINGS["en"])
+    return table.get(key, key)
 
 
 # ------------------------------------------------------------- database
