@@ -42,6 +42,13 @@ STRINGS = {
         "amount": "Amount",
         "spending_name": "Spending name",
         "category": "Category",
+        "budget_cat_food": "Food",
+        "budget_cat_transport": "Transport",
+        "budget_cat_entertainment": "Entertainment",
+        "budget_cat_utilities": "Utilities",
+        "budget_cat_clothing": "Clothing",
+        "budget_cat_other": "Other",
+        "diet_budget_legend": "left = diet, right = budget",
         "price": "Price (HKD)",
         "limit_hkd": "Limit (HKD)",
         "period": "Limit period",
@@ -112,6 +119,8 @@ STRINGS = {
         "rank_disciplined": "Disciplined",
         "rank_legend": "Legend",
         "leaderboard": "Leaderboard",
+        "user": "User",
+        "score": "Score",
         "rank_title": "Rank",
         "tier": "Tier",
         "no_users_yet": "No users yet.",
@@ -145,6 +154,13 @@ STRINGS = {
         "amount": "份量",
         "spending_name": "支出名稱",
         "category": "類別",
+        "budget_cat_food": "食物",
+        "budget_cat_transport": "交通",
+        "budget_cat_entertainment": "娛樂",
+        "budget_cat_utilities": "水電雜費",
+        "budget_cat_clothing": "服飾",
+        "budget_cat_other": "其他",
+        "diet_budget_legend": "左＝飲食，右＝預算",
         "price": "價格（港元）",
         "limit_hkd": "限額（港元）",
         "period": "限額週期",
@@ -215,6 +231,8 @@ STRINGS = {
         "rank_disciplined": "自律",
         "rank_legend": "傳奇",
         "leaderboard": "排行榜",
+        "user": "用戶",
+        "score": "積分",
         "rank_title": "排名",
         "tier": "階級",
         "no_users_yet": "尚無用戶。",
@@ -1024,14 +1042,32 @@ class DietTrackerApp:
 
     def refresh_diet(self):
         self.tree.delete(*self.tree.get_children())
+        cats = list(self.diet_categories)
+        columns = ("name", "meal", "amount") + tuple(cats)
+        self.tree["columns"] = columns
+        headings = {
+            "name": self.tr("food"),
+            "meal": self.tr("meal"),
+            "amount": self.tr("amount"),
+        }
+        for key in cats:
+            headings[key] = self.tr("calories") if key == "calories" else self.diet_categories[key].name
+        widths = {"name": 160, "meal": 80, "amount": 80}
+        for key, text in headings.items():
+            self.tree.heading(key, text=text)
+            self.tree.column(key, width=widths.get(key, 70))
+
         day = self.days.get(self.selected_date)
         if day:
             for i, entry in enumerate(day.entries):
-                amount = str(entry.amount) if entry.amount else ""
-                self.tree.insert(
-                    "", "end", iid=str(i),
-                    values=(entry.name, self.tr(entry.meal), amount, str(entry.calories)),
-                )
+                values = [entry.name, self.tr(entry.meal), str(entry.amount) if entry.amount else ""]
+                for key in cats:
+                    if key == "calories":
+                        values.append(str(entry.calories))
+                    else:
+                        extra = entry.extras.get(key)
+                        values.append(str(extra) if extra else "")
+                self.tree.insert("", "end", iid=str(i), values=values)
 
         if not day or not day.entries:
             self.diet_total_label.config(text=self.tr("no_entries"), fg="#555555")
@@ -1074,6 +1110,17 @@ class DietTrackerApp:
         self.budget_limit = Value(hkd, "HKD")
         self.refresh_all()
 
+    def budget_cat_display(self, c):
+        key = "budget_cat_" + c.lower().replace(" ", "_")
+        label = self.tr(key)
+        return label if label != key else c
+
+    def budget_cat_from_label(self, label):
+        for c in CATEGORIES:
+            if self.budget_cat_display(c) == label:
+                return c
+        return label if label in CATEGORIES else label
+
     def open_spending_dialog(self, entry=None):
         dialog = tk.Toplevel(self.root)
         dialog.title(self.tr("create") if entry is None else self.tr("edit"))
@@ -1093,8 +1140,9 @@ class DietTrackerApp:
         tk.Entry(frame, textvariable=name_var).grid(row=1, column=1, sticky="we", pady=3)
 
         tk.Label(frame, text=self.tr("category") + ":").grid(row=2, column=0, sticky="w")
-        cat_var = tk.StringVar(value=entry.category if entry else "Food")
-        ttk.Combobox(frame, textvariable=cat_var, values=CATEGORIES, width=16).grid(
+        cat_var = tk.StringVar(value=self.budget_cat_display(entry.category if entry else "Food"))
+        ttk.Combobox(frame, textvariable=cat_var,
+                     values=[self.budget_cat_display(c) for c in CATEGORIES], width=16).grid(
             row=2, column=1, sticky="we", pady=3
         )
 
@@ -1119,10 +1167,13 @@ class DietTrackerApp:
             spendings = self.spends.setdefault(self.selected_date, [])
             if entry:
                 entry.name = name
-                entry.category = cat_var.get().strip() or "Other"
+                entry.category = self.budget_cat_from_label(cat_var.get().strip()) or "Other"
                 entry.price = Value(price, "HKD")
             else:
-                spendings.append(SpendingEntry(name, cat_var.get().strip() or "Other", Value(price, "HKD")))
+                spendings.append(SpendingEntry(
+                    name, self.budget_cat_from_label(cat_var.get().strip()) or "Other",
+                    Value(price, "HKD"),
+                ))
             self.refresh_all()
             dialog.destroy()
 
@@ -1162,7 +1213,7 @@ class DietTrackerApp:
         for i, entry in enumerate(spendings):
             self.budget_tree.insert(
                 "", "end", iid=str(i),
-                values=(entry.name, entry.category, str(entry.price)),
+                values=(entry.name, self.budget_cat_display(entry.category), str(entry.price)),
             )
 
         expenses = period_expenses(self.spends, self.budget_period, self.selected_date)

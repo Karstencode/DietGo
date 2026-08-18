@@ -22,6 +22,12 @@ def tr(key):
     return table.get(key, key)
 
 
+def budget_cat_display(c):
+    """Translated label for a stored (English) budget category."""
+    key = "budget_cat_" + c.lower().replace(" ", "_")
+    return tr(key) if tr(key) != key else c
+
+
 # ------------------------------------------------------------- database
 
 def get_db():
@@ -220,10 +226,12 @@ def calendar_widget(prefix, status_fn):
             if daynum == 0:
                 continue
             d = date(month.year, month.month, daynum)
-            status = status_fn(d)
-            mark = {"none": "", "ok": "🟢", "exceeded": "🔴"}[status]
+            diet, budget = status_fn(d)
+            def dot(s):
+                return {"ok": "🟢", "exceeded": "🔴", "none": "·"}[s]
+            marks = f"{dot(diet)}{dot(budget)}"
             is_selected = d == st.session_state[f"{prefix}_selected"]
-            label = (f"▶ {daynum}" if is_selected else f"{mark} {daynum}")
+            label = (f"▶ {marks} {daynum}" if is_selected else f"{marks} {daynum}")
             if cols[i].button(label, key=f"{prefix}_day_{d.isoformat()}"):
                 st.session_state[f"{prefix}_selected"] = d
                 st.rerun()
@@ -261,10 +269,10 @@ def day_status(data, d):
 
 def food_form(data, day):
     entries = data["days"].get(day.isoformat(), [])
-    options = [tr("add_new")] + [f"{i}: {e['name']}" for i, e in enumerate(entries)]
+    options = [tr("add_new")] + [f"{i + 1}: {e['name']}" for i, e in enumerate(entries)]
     choice = st.selectbox(tr("entry"), options, key=f"food_choice_{day.isoformat()}")
     editing = choice != tr("add_new")
-    entry = entries[int(choice.split(":")[0])] if editing else None
+    entry = entries[int(choice.split(":")[0]) - 1] if editing else None
     cats = diet_categories(data)
     meal_labels = [tr(m) for m in MEALS]
 
@@ -300,7 +308,7 @@ def food_form(data, day):
             "extras": {k: [float(v), cats[k].unit] for k, v in extras.items() if v > 0},
         }
         if editing:
-            entries[int(choice.split(":")[0])] = new_entry
+            entries[int(choice.split(":")[0]) - 1] = new_entry
         else:
             data["days"].setdefault(day.isoformat(), []).append(new_entry)
         st.session_state.data = data
@@ -312,7 +320,7 @@ def remove_food_form(data, day):
     entries = data["days"].get(day.isoformat(), [])
     if not entries:
         return
-    opts = {f"{i}: {e['name']}": i for i, e in enumerate(entries)}
+    opts = {f"{i + 1}: {e['name']}": i for i, e in enumerate(entries)}
     target = st.selectbox(tr("remove_entry"), [tr("select")] + list(opts),
                           key=f"food_remove_{day.isoformat()}")
     if st.button(tr("remove"), key=f"food_remove_btn_{day.isoformat()}",
@@ -327,13 +335,18 @@ def remove_food_form(data, day):
 
 def food_table(data, day):
     entries = data["days"].get(day.isoformat(), [])
+    cats = diet_categories(data)
     rows = []
-    for i, e in enumerate(entries):
-        amount = f"{e['amount'][0]:g} {e['amount'][1]}" if e.get("amount") else ""
-        extras = ", ".join(f"{k}: {v[0]:g} {v[1]}" for k, v in e.get("extras", {}).items())
-        rows.append({"#": i, tr("food"): e["name"], tr("meal"): tr(e["meal"]),
-                     tr("amount"): amount, tr("calories"): f"{e['calories']} kcal",
-                     "Extras": extras})
+    for i, e in enumerate(entries, start=1):
+        row = {"#": i, tr("food"): e["name"], tr("meal"): tr(e["meal"]),
+               tr("amount"): f"{e['amount'][0]:g} {e['amount'][1]}" if e.get("amount") else ""}
+        for key, cat in cats.items():
+            if key == "calories":
+                row[tr("calories")] = f"{e['calories']} kcal"
+            else:
+                val = e.get("extras", {}).get(key)
+                row[cat.name] = f"{val[0]:g} {val[1]}" if val else ""
+        rows.append(row)
     if rows:
         st.table(rows)
     else:
@@ -427,15 +440,19 @@ def categories_manager(data):
 
 def spending_form(data, day):
     entries = data["spends"].get(day.isoformat(), [])
-    options = [tr("add_new")] + [f"{i}: {e['name']}" for i, e in enumerate(entries)]
+    options = [tr("add_new")] + [f"{i + 1}: {e['name']}" for i, e in enumerate(entries)]
     choice = st.selectbox(tr("entry"), options, key=f"spend_choice_{day.isoformat()}")
     editing = choice != tr("add_new")
-    entry = entries[int(choice.split(":")[0])] if editing else None
+    entry = entries[int(choice.split(":")[0]) - 1] if editing else None
 
+    cat_labels = {c: budget_cat_display(c) for c in CATEGORIES}
     with st.form(key=f"spend_form_{day.isoformat()}_{'e' if editing else 'n'}"):
         name = st.text_input(tr("spending_name"), value=entry["name"] if entry else "")
-        category = st.selectbox(tr("category"), CATEGORIES,
-                                index=CATEGORIES.index(entry["category"]) if entry and entry["category"] in CATEGORIES else 0)
+        category_label = st.selectbox(
+            tr("category"), list(cat_labels.values()),
+            index=CATEGORIES.index(entry["category"]) if entry and entry["category"] in CATEGORIES else 0,
+        )
+        category = CATEGORIES[list(cat_labels.values()).index(category_label)]
         price = st.number_input(tr("price"), min_value=0.0,
                                 value=float(entry["price"]) if entry else 0.0,
                                 step=1.0)
@@ -447,7 +464,7 @@ def spending_form(data, day):
             return
         new_entry = {"name": name.strip(), "category": category, "price": float(price)}
         if editing:
-            entries[int(choice.split(":")[0])] = new_entry
+            entries[int(choice.split(":")[0]) - 1] = new_entry
         else:
             data["spends"].setdefault(day.isoformat(), []).append(new_entry)
         st.session_state.data = data
@@ -459,7 +476,7 @@ def remove_spending_form(data, day):
     entries = data["spends"].get(day.isoformat(), [])
     if not entries:
         return
-    opts = {f"{i}: {e['name']}": i for i, e in enumerate(entries)}
+    opts = {f"{i + 1}: {e['name']}": i for i, e in enumerate(entries)}
     target = st.selectbox(tr("remove_entry"), [tr("select")] + list(opts),
                           key=f"spend_remove_{day.isoformat()}")
     if st.button(tr("remove"), key=f"spend_remove_btn_{day.isoformat()}",
@@ -474,8 +491,8 @@ def remove_spending_form(data, day):
 
 def spending_table(data, day):
     entries = data["spends"].get(day.isoformat(), [])
-    rows = [{"#": i, tr("spending"): e["name"], tr("category"): e["category"],
-             tr("price_col"): f"{e['price']:g} HKD"} for i, e in enumerate(entries)]
+    rows = [{"#": i, tr("spending"): e["name"], tr("category"): budget_cat_display(e["category"]),
+             tr("price_col"): f"{e['price']:g} HKD"} for i, e in enumerate(entries, start=1)]
     if rows:
         st.table(rows)
     else:
@@ -578,11 +595,11 @@ def leaderboard_table():
         rank_key, _ = diet_rank(d, w, m)
         rows.append({
             tr("rank_title"): place,
-            "User": user + mark,
+            tr("user"): user + mark,
             tr("day"): d,
             tr("week"): w,
             tr("month"): m,
-            "Score": score,
+            tr("score"): score,
             tr("tier"): tr(rank_key),
         })
     st.table(rows)
@@ -591,10 +608,13 @@ def leaderboard_table():
 def render_app(data):
     with st.expander("🏆 " + tr("leaderboard")):
         leaderboard_table()
-    selected = calendar_widget("global", lambda d: day_status(data, d))
+    selected = calendar_widget(
+        "global", lambda d: (diet_status(data, d), budget_status(data, d))
+    )
     st.subheader(format_date(selected))
     st.markdown(
-        f"🟢 {tr('within_limit')}　🔴 {tr('over_limit')}　─ {tr('no_entries')}"
+        f"🟢 {tr('within_limit')}　🔴 {tr('over_limit')}　· {tr('no_entries')}　"
+        f"| {tr('diet_budget_legend')}"
     )
 
     col_diet, col_budget = st.columns(2, gap="large")
