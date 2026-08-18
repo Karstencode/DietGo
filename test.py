@@ -451,6 +451,17 @@ class TestLeaderboards(unittest.TestCase):
         self.assertEqual(webapp.my_leaderboards("bob"), [])
         self.assertEqual(webapp.my_leaderboards("alice")[0]["name"], "A")
 
+    def test_kick_member(self):
+        self.add_user("alice")
+        self.add_user("bob")
+        webapp.create_leaderboard("A", "1", "alice")
+        webapp.join_leaderboard("A", "1", "bob")
+        ok, key = webapp.kick_member(webapp.all_leaderboards()[0]["id"], "bob")
+        self.assertTrue(ok)
+        self.assertEqual(key, "member_kicked")
+        self.assertEqual(webapp.all_leaderboards()[0]["members"], ["alice"])
+        self.assertEqual(webapp.my_leaderboards("bob"), [])
+
     def test_rename_and_change_code(self):
         self.add_user("alice")
         ok, _ = webapp.create_leaderboard("A", "1", "alice")
@@ -565,6 +576,23 @@ class TestAdminRestrictions(unittest.TestCase):
         self.assertTrue({"alb_name", "alb_code"} <= keys)
         self.assertTrue(any("Remove leaderboard" in b.label for b in self.at.button))
         self.assertFalse(keys & {"lb_name", "lb_code", "jb_name", "jb_code"})
+
+    def test_admin_can_kick_member(self):
+        salt = os.urandom(16).hex()
+        with webapp.get_db() as conn:
+            conn.execute("INSERT INTO users (username, salt, hash) VALUES (?,?,?)",
+                         ("bob", salt, webapp.hash_password("pw", salt)))
+        webapp.create_leaderboard("Team", "x", "bob")
+        self.at.run(timeout=60)
+        kick_sel = [s for s in self.at.selectbox if s.key == "adm_kick_sel_1"][0]
+        self.assertEqual(kick_sel.options, ["bob"])
+        kick_sel.set_value("bob")
+        [b for b in self.at.button if b.key == "adm_kick_btn_1"][0].click()
+        self.at.run(timeout=60)
+        self.assertTrue(any("Remove bob from this leaderboard" in w.value for w in self.at.warning))
+        [b for b in self.at.button if b.key == "adm_kick_yes_1"][0].click()
+        self.at.run(timeout=60)
+        self.assertEqual(webapp.all_leaderboards()[0]["members"], [])
 
     def test_normal_user_still_has_everything(self):
         salt = os.urandom(16).hex()

@@ -188,6 +188,15 @@ def leave_leaderboard(lid, username):
     return True, "leaderboard_left"
 
 
+def kick_member(lid, username):
+    """Admin-initiated removal of a user from a leaderboard."""
+    with get_db() as conn:
+        conn.execute(
+            "DELETE FROM memberships WHERE leaderboard_id = ? AND username = ?", (lid, username)
+        )
+    return True, "member_kicked"
+
+
 def delete_leaderboard(lid):
     """Delete a leaderboard and all its memberships, renumbering the rest so ids stay 1..N."""
     with get_db() as conn:
@@ -1134,6 +1143,29 @@ def admin_leaderboards():
                     if st.button(tr("remove_leaderboard"), key=f"adm_lb_del_btn_{b['id']}"):
                         st.session_state[f"adm_lb_del_{b['id']}"] = True
                         st.rerun()
+            if b["members"]:
+                kick_sel = st.selectbox(
+                    tr("kick_member"), b["members"], key=f"adm_kick_sel_{b['id']}"
+                )
+                if st.button(tr("kick"), key=f"adm_kick_btn_{b['id']}"):
+                    st.session_state[f"adm_kick_conf_{b['id']}"] = kick_sel
+                    st.rerun()
+                target = st.session_state.get(f"adm_kick_conf_{b['id']}")
+                if target:
+                    st.warning(tr("kick_confirm").format(name=target))
+                    k1, k2 = st.columns(2)
+                    with k1:
+                        if st.button(tr("confirm"), key=f"adm_kick_yes_{b['id']}"):
+                            kick_member(b["id"], target)
+                            st.session_state.pop(f"adm_kick_conf_{b['id']}", None)
+                            st.session_state.pop(f"adm_kick_sel_{b['id']}", None)
+                            st.success(tr("member_kicked"))
+                            st.rerun()
+                    with k2:
+                        if st.button(tr("cancel"), key=f"adm_kick_no_{b['id']}"):
+                            st.session_state.pop(f"adm_kick_conf_{b['id']}", None)
+                            st.rerun()
+            st.divider()
 
 
 def admin_show_date(data, day):
