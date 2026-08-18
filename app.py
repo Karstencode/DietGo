@@ -1042,44 +1042,46 @@ def admin_leaderboards():
     if not boards:
         st.info(tr("no_leaderboards"))
         return
-    for b in boards:
-        st.write(
-            f"**{b['name']}** (id {b['id']}) · {tr('access_code')}: `{b['access_code']}` · "
-            f"{tr('members')}: {', '.join(b['members']) or '—'}"
-        )
-        c1, c2, c3 = st.columns(3)
-        with c1:
-            with st.form(f"adm_lb_name_{b['id']}"):
-                new_name = st.text_input(tr("leaderboard_name"), value=b["name"],
-                                         key=f"lbn_{b['id']}")
-                if st.form_submit_button(tr("change_name")):
-                    rename_leaderboard(b["id"], new_name.strip())
-                    st.rerun()
-        with c2:
-            with st.form(f"adm_lb_code_{b['id']}"):
-                new_code = st.text_input(tr("access_code"), value=b["access_code"],
-                                         key=f"lbc_{b['id']}")
-                if st.form_submit_button(tr("change_code")):
-                    change_access_code(b["id"], new_code.strip())
-                    st.rerun()
-        with c3:
-            if st.session_state.get(f"adm_lb_del_{b['id']}"):
-                st.warning(tr("delete_warning"))
-                rc1, rc2 = st.columns(2)
-                with rc1:
-                    if st.button(tr("confirm"), key=f"adm_lb_del_yes_{b['id']}"):
-                        delete_leaderboard(b["id"])
-                        st.session_state.pop(f"adm_lb_del_{b['id']}", None)
-                        st.success(tr("leaderboard_removed"))
+    st.caption(tr("all_leaderboards"))
+    with st.container(height=460):
+        for b in boards:
+            st.write(
+                f"**{b['name']}** (id {b['id']}) · {tr('access_code')}: `{b['access_code']}` · "
+                f"{tr('members')}: {', '.join(b['members']) or '—'}"
+            )
+            c1, c2, c3 = st.columns(3)
+            with c1:
+                with st.form(f"adm_lb_name_{b['id']}"):
+                    new_name = st.text_input(tr("leaderboard_name"), value=b["name"],
+                                             key=f"lbn_{b['id']}")
+                    if st.form_submit_button(tr("change_name")):
+                        rename_leaderboard(b["id"], new_name.strip())
                         st.rerun()
-                with rc2:
-                    if st.button(tr("cancel"), key=f"adm_lb_del_no_{b['id']}"):
-                        st.session_state.pop(f"adm_lb_del_{b['id']}", None)
+            with c2:
+                with st.form(f"adm_lb_code_{b['id']}"):
+                    new_code = st.text_input(tr("access_code"), value=b["access_code"],
+                                             key=f"lbc_{b['id']}")
+                    if st.form_submit_button(tr("change_code")):
+                        change_access_code(b["id"], new_code.strip())
                         st.rerun()
-            else:
-                if st.button(tr("remove_leaderboard"), key=f"adm_lb_del_btn_{b['id']}"):
-                    st.session_state[f"adm_lb_del_{b['id']}"] = True
-                    st.rerun()
+            with c3:
+                if st.session_state.get(f"adm_lb_del_{b['id']}"):
+                    st.warning(tr("delete_warning"))
+                    rc1, rc2 = st.columns(2)
+                    with rc1:
+                        if st.button(tr("confirm"), key=f"adm_lb_del_yes_{b['id']}"):
+                            delete_leaderboard(b["id"])
+                            st.session_state.pop(f"adm_lb_del_{b['id']}", None)
+                            st.success(tr("leaderboard_removed"))
+                            st.rerun()
+                    with rc2:
+                        if st.button(tr("cancel"), key=f"adm_lb_del_no_{b['id']}"):
+                            st.session_state.pop(f"adm_lb_del_{b['id']}", None)
+                            st.rerun()
+                else:
+                    if st.button(tr("remove_leaderboard"), key=f"adm_lb_del_btn_{b['id']}"):
+                        st.session_state[f"adm_lb_del_{b['id']}"] = True
+                        st.rerun()
 
 
 def admin_show_date(data, day):
