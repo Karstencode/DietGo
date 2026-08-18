@@ -389,6 +389,25 @@ class TestLeaderboards(unittest.TestCase):
         self.assertEqual(webapp.join_leaderboard("Nope", "abc123", "alice")[1],
                          "wrong_access_code")
 
+    def test_create_without_member(self):
+        ok, key = webapp.create_leaderboard("Admin Board", "code1", None)
+        self.assertTrue(ok)
+        self.assertEqual(key, "leaderboard_created")
+        board = webapp.all_leaderboards()[0]
+        self.assertEqual(board["name"], "Admin Board")
+        self.assertEqual(board["members"], [])
+        self.assertEqual(board["member_count"], 0)
+
+    def test_delete_leaderboard(self):
+        self.add_user("alice")
+        webapp.create_leaderboard("A", "1", "alice")
+        webapp.join_leaderboard("A", "1", "alice")
+        lid = webapp.all_leaderboards()[0]["id"]
+        ok, key = webapp.delete_leaderboard(lid)
+        self.assertTrue(ok)
+        self.assertEqual(key, "leaderboard_removed")
+        self.assertEqual(webapp.all_leaderboards(), [])
+
     def test_duplicate_name_and_already_member(self):
         self.add_user("alice")
         self.add_user("bob")
@@ -459,7 +478,7 @@ class TestAdminRestrictions(unittest.TestCase):
     """Admin sees users + leaderboard settings only: no diet/budget add,
     no leaderboard create/join forms."""
 
-    DB = os.path.join(tempfile.gettempdir(), "diet_budget_test_admin.db")
+    DB = os.path.join(os.path.dirname(os.path.abspath(webapp.__file__)), "streamlit_data.db")
 
     def setUp(self):
         webapp.DB_PATH = self.DB
@@ -502,6 +521,14 @@ class TestAdminRestrictions(unittest.TestCase):
         labels = [e.label for e in self.at.expander]
         self.assertTrue(any("Admin panel" in l for l in labels))
         self.assertTrue(any("Leaderboards" in l for l in labels))
+
+    def test_admin_can_manage_but_not_join(self):
+        webapp.create_leaderboard("Board", "x1", None)
+        self.at.run(timeout=60)
+        keys = {t.key for t in self.at.text_input}
+        self.assertTrue({"alb_name", "alb_code"} <= keys)
+        self.assertTrue(any("Remove leaderboard" in b.label for b in self.at.button))
+        self.assertFalse(keys & {"lb_name", "lb_code", "jb_name", "jb_code"})
 
     def test_normal_user_still_has_everything(self):
         salt = os.urandom(16).hex()

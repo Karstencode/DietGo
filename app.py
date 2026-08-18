@@ -132,8 +132,8 @@ def reset_password(username, new_password):
 
 # ---------------------------------------------------------- leaderboards
 
-def create_leaderboard(name, code, username):
-    """Create a leaderboard owned by `username` (also its first member)."""
+def create_leaderboard(name, code, username=None):
+    """Create a leaderboard. `username` (optional) becomes its first member."""
     if not name or not code:
         return False, "name_empty"
     with get_db() as conn:
@@ -142,10 +142,11 @@ def create_leaderboard(name, code, username):
         cur = conn.execute(
             "INSERT INTO leaderboards (name, access_code) VALUES (?, ?)", (name, code)
         )
-        conn.execute(
-            "INSERT INTO memberships (leaderboard_id, username) VALUES (?, ?)",
-            (cur.lastrowid, username),
-        )
+        if username:
+            conn.execute(
+                "INSERT INTO memberships (leaderboard_id, username) VALUES (?, ?)",
+                (cur.lastrowid, username),
+            )
     return True, "leaderboard_created"
 
 
@@ -176,6 +177,14 @@ def leaderboard_members(lid):
         return [r[0] for r in conn.execute(
             "SELECT username FROM memberships WHERE leaderboard_id = ? ORDER BY username", (lid,)
         ).fetchall()]
+
+
+def delete_leaderboard(lid):
+    """Delete a leaderboard and all its memberships."""
+    with get_db() as conn:
+        conn.execute("DELETE FROM leaderboards WHERE id = ?", (lid,))
+        conn.execute("DELETE FROM memberships WHERE leaderboard_id = ?", (lid,))
+    return True, "leaderboard_removed"
 
 
 def my_leaderboards(username):
@@ -1010,8 +1019,25 @@ def admin_panel():
 
 
 def admin_leaderboards():
-    """Admin view of every leaderboard: rename it or change its access code."""
+    """Admin view of every leaderboard: create, rename, change its access code, or remove it."""
     st.markdown(f"### 🏆 {tr('leaderboards')}")
+    with st.form("adm_lb_create"):
+        c1, c2 = st.columns(2)
+        with c1:
+            alb_name = st.text_input(tr("leaderboard_name"), key="alb_name")
+        with c2:
+            alb_code = st.text_input(tr("access_code"), type="password", key="alb_code")
+        if st.form_submit_button(tr("create_leaderboard")):
+            ok, key = create_leaderboard(alb_name.strip(), alb_code.strip(), None)
+            if ok:
+                for k in ("alb_name", "alb_code"):
+                    st.session_state.pop(k, None)
+                st.success(tr(key))
+                st.rerun()
+            else:
+                st.error(tr(key))
+    st.divider()
+
     boards = all_leaderboards()
     if not boards:
         st.info(tr("no_leaderboards"))
@@ -1021,7 +1047,7 @@ def admin_leaderboards():
             f"**{b['name']}** (id {b['id']}) · {tr('access_code')}: `{b['access_code']}` · "
             f"{tr('members')}: {', '.join(b['members']) or '—'}"
         )
-        c1, c2 = st.columns(2)
+        c1, c2, c3 = st.columns(3)
         with c1:
             with st.form(f"adm_lb_name_{b['id']}"):
                 new_name = st.text_input(tr("leaderboard_name"), value=b["name"],
@@ -1035,6 +1061,24 @@ def admin_leaderboards():
                                          key=f"lbc_{b['id']}")
                 if st.form_submit_button(tr("change_code")):
                     change_access_code(b["id"], new_code.strip())
+                    st.rerun()
+        with c3:
+            if st.session_state.get(f"adm_lb_del_{b['id']}"):
+                st.warning(tr("delete_warning"))
+                rc1, rc2 = st.columns(2)
+                with rc1:
+                    if st.button(tr("confirm"), key=f"adm_lb_del_yes_{b['id']}"):
+                        delete_leaderboard(b["id"])
+                        st.session_state.pop(f"adm_lb_del_{b['id']}", None)
+                        st.success(tr("leaderboard_removed"))
+                        st.rerun()
+                with rc2:
+                    if st.button(tr("cancel"), key=f"adm_lb_del_no_{b['id']}"):
+                        st.session_state.pop(f"adm_lb_del_{b['id']}", None)
+                        st.rerun()
+            else:
+                if st.button(tr("remove_leaderboard"), key=f"adm_lb_del_btn_{b['id']}"):
+                    st.session_state[f"adm_lb_del_{b['id']}"] = True
                     st.rerun()
 
 

@@ -68,7 +68,8 @@ view any user's records (searchable list), and only **admin** can:
 - delete accounts
 - add accounts
 - rename any username (leaderboard memberships follow)
-- rename any leaderboard or change its access code
+- create, rename, or remove any leaderboard, and change its access code
+  (admin never joins a leaderboard — they only manage them)
 
 Set the admin password via the `ADMIN_PASSWORD` environment variable or in
 `.streamlit/secrets.toml` (`admin_password`). Otherwise it defaults to
