@@ -31,14 +31,24 @@ interfaces: **English** and **繁體中文 (Traditional Chinese)**.
 
   Score = `day_streak + week_streak × 7 + month_streak × 30`.
 
-- 🏆 **Leaderboards**: any user can **create** or **join** a private leaderboard
-  (by name + access code). Each board ranks its members by their combined diet
-  score in the top‑to‑bottom order
+- 🏆 **Groups**: any user can **create** or **join** a private group
+  (by name + access code). Every member is automatically on the group ranking,
+  ordered top‑to‑bottom by their combined diet score
   (`Score = day_streak + week_streak × 7 + month_streak × 30`).
+  - The **owner** (creator) can rename the group, change its access code,
+    remove it, **promote** members to co‑owners (same rights) or **demote**
+    owners, **kick** members, and view any member's diet/budget records.
+    Owners cannot add users — people join themselves via the access code.
+  - Non‑owners can **leave** a group any time.
 - 🟢 Calendar day colouring: green = within limits, red = over, grey = no data.
 - 👤 Per-user accounts with salted password hashes (web version).
 - 📱 Mobile-friendly web UI: the diet/budget day panels switch between a big
   **Add** button (entry form) and a **Display/Edit** button (list + edit/remove).
+- 🗃️ The web app keeps at most **30 days** of diet/budget data per user. When
+  storage is full, adding a brand‑new day prompts you to delete the oldest
+  stored day(s) first. Day / week / month streaks are **preserved across
+  deletions** and keep building seamlessly, so trimming old data never breaks a
+  streak.
 
 ## Run locally (web)
 
@@ -61,15 +71,17 @@ python3 test.py
 
 ## Admin account (web)
 
-A reserved **`admin`** account is created automatically on first run. It can
-view any user's records (searchable list), and only **admin** can:
+A reserved **`admin`** account is created automatically on first run. Only
+**admin** can (and admin never views any user's diet/budget records):
 
 - reset any user's password
 - delete accounts
 - add accounts
-- rename any username (leaderboard memberships follow)
-- create, rename, or remove any leaderboard, and change its access code
-  (admin never joins a leaderboard — they only manage them)
+- rename any username (group memberships and ownership follow)
+- create, rename, or remove any **group**, and change its access code
+  (admin never joins a group — they only manage them). Admin sees a group's
+  member list, and can kick members, **only for the groups the admin
+  created**; for all other groups the member list is hidden.
 
 Set the admin password via the `ADMIN_PASSWORD` environment variable or in
 `.streamlit/secrets.toml` (`admin_password`). Otherwise it defaults to

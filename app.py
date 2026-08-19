@@ -10,12 +10,16 @@ import streamlit as st
 from main import (
     Value, CategoryLimit, FoodEntry, DietDay, SpendingEntry,
     categories_satisfied, compute_streaks, compute_budget_streaks,
+    period_met, period_start_of, next_period_start,
     period_expenses, diet_rank, diet_score, STRINGS, MEALS, CATEGORIES, PERIODS, UNITS, LANGS,
+    budget_allowance_factor,
 )
 
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "streamlit_data.db")
 
 ADMIN_USER = "admin"
+
+MAX_DAYS = 2
 
 
 def tr(key):
@@ -46,6 +50,12 @@ def get_db():
     return sqlite3.connect(DB_PATH)
 
 
+def _add_column(conn, table, column, decl):
+    cols = [r[1] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()]
+    if column not in cols:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
+
+
 def init_db():
     with get_db() as conn:
         conn.execute(
@@ -58,13 +68,17 @@ def init_db():
         )
         conn.execute(
             "CREATE TABLE IF NOT EXISTS leaderboards "
-            "(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, access_code TEXT NOT NULL)"
+            "(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, "
+            "access_code TEXT NOT NULL, owner TEXT)"
         )
         conn.execute(
             "CREATE TABLE IF NOT EXISTS memberships "
             "(leaderboard_id INTEGER NOT NULL, username TEXT NOT NULL, "
+            "is_owner INTEGER DEFAULT 0, "
             "PRIMARY KEY (leaderboard_id, username))"
         )
+        _add_column(conn, "leaderboards", "owner", "TEXT")
+        _add_column(conn, "memberships", "is_owner", "INTEGER DEFAULT 0")
 
 
 def hash_password(password, salt_hex):
@@ -130,28 +144,29 @@ def reset_password(username, new_password):
     return True, tr("password_reset")
 
 
-# ---------------------------------------------------------- leaderboards
+# -------------------------------------------------------------- groups
 
-def create_leaderboard(name, code, username=None):
-    """Create a leaderboard. `username` (optional) becomes its first member."""
+def create_group(name, code, username=None):
+    """Create a group. `username` (optional) becomes its owner and first member."""
     if not name or not code:
         return False, "name_empty"
     with get_db() as conn:
         if conn.execute("SELECT 1 FROM leaderboards WHERE name = ?", (name,)).fetchone():
-            return False, "leaderboard_exists"
+            return False, "group_exists"
         cur = conn.execute(
-            "INSERT INTO leaderboards (name, access_code) VALUES (?, ?)", (name, code)
+            "INSERT INTO leaderboards (name, access_code, owner) VALUES (?, ?, ?)",
+            (name, code, username or ADMIN_USER),
         )
         if username:
             conn.execute(
-                "INSERT INTO memberships (leaderboard_id, username) VALUES (?, ?)",
+                "INSERT INTO memberships (leaderboard_id, username, is_owner) VALUES (?, ?, 1)",
                 (cur.lastrowid, username),
             )
-    return True, "leaderboard_created"
+    return True, "group_created"
 
 
-def join_leaderboard(name, code, username):
-    """Join an existing leaderboard by name + access code."""
+def join_group(name, code, username):
+    """Join an existing group by name + access code (as a regular member)."""
     if not name or not code:
         return False, "wrong_access_code"
     with get_db() as conn:
@@ -167,29 +182,61 @@ def join_leaderboard(name, code, username):
         ).fetchone():
             return False, "already_member"
         conn.execute(
-            "INSERT INTO memberships (leaderboard_id, username) VALUES (?, ?)", (lid, username)
+            "INSERT INTO memberships (leaderboard_id, username, is_owner) VALUES (?, ?, 0)",
+            (lid, username),
         )
-    return True, "leaderboard_joined"
+    return True, "group_joined"
 
 
-def leaderboard_members(lid):
+def group_members(lid):
+    """Members of a group as [{username, is_owner}] sorted by username."""
     with get_db() as conn:
-        return [r[0] for r in conn.execute(
-            "SELECT username FROM memberships WHERE leaderboard_id = ? ORDER BY username", (lid,)
-        ).fetchall()]
+        return [
+            {"username": r[0], "is_owner": bool(r[1])}
+            for r in conn.execute(
+                "SELECT username, is_owner FROM memberships "
+                "WHERE leaderboard_id = ? ORDER BY username", (lid,),
+            ).fetchall()
+        ]
 
 
-def leave_leaderboard(lid, username):
+def is_group_owner(lid, username):
+    with get_db() as conn:
+        return conn.execute(
+            "SELECT 1 FROM memberships WHERE leaderboard_id = ? AND username = ? AND is_owner = 1",
+            (lid, username),
+        ).fetchone() is not None
+
+
+def group_owner(lid):
+    """The username recorded as the group's creator."""
+    with get_db() as conn:
+        row = conn.execute("SELECT owner FROM leaderboards WHERE id = ?", (lid,)).fetchone()
+        return row[0] if row else None
+
+
+def leave_group(lid, username):
     """Remove a user's membership; ranks recompute on next render."""
     with get_db() as conn:
         conn.execute(
             "DELETE FROM memberships WHERE leaderboard_id = ? AND username = ?", (lid, username)
         )
-    return True, "leaderboard_left"
+    return True, "group_left"
 
 
-def kick_member(lid, username):
-    """Admin-initiated removal of a user from a leaderboard."""
+def can_manage_group(lid, username):
+    """Admin manages the groups they created; otherwise owner members manage it."""
+    if username == ADMIN_USER:
+        return group_owner(lid) == ADMIN_USER
+    return is_group_owner(lid, username)
+
+
+def kick_member(lid, username, actor):
+    """An owner (or admin, in an admin-created group) removes a member."""
+    if not can_manage_group(lid, actor):
+        return False, "not_allowed"
+    if username == actor:
+        return False, "not_allowed"
     with get_db() as conn:
         conn.execute(
             "DELETE FROM memberships WHERE leaderboard_id = ? AND username = ?", (lid, username)
@@ -197,8 +244,46 @@ def kick_member(lid, username):
     return True, "member_kicked"
 
 
-def delete_leaderboard(lid):
-    """Delete a leaderboard and all its memberships, renumbering the rest so ids stay 1..N."""
+def promote_owner(lid, username, actor):
+    """An owner promotes an existing member to co-owner."""
+    if not can_manage_group(lid, actor):
+        return False, "not_allowed"
+    with get_db() as conn:
+        if not conn.execute(
+            "SELECT 1 FROM memberships WHERE leaderboard_id = ? AND username = ?",
+            (lid, username),
+        ).fetchone():
+            return False, "not_a_member"
+        conn.execute(
+            "UPDATE memberships SET is_owner = 1 WHERE leaderboard_id = ? AND username = ?",
+            (lid, username),
+        )
+    return True, "owner_promoted"
+
+
+def demote_owner(lid, username, actor):
+    """An owner removes co-owner status from another owner (not themselves)."""
+    if not can_manage_group(lid, actor):
+        return False, "not_allowed"
+    if username == actor:
+        return False, "not_allowed"
+    with get_db() as conn:
+        if not conn.execute(
+            "SELECT 1 FROM memberships WHERE leaderboard_id = ? AND username = ? AND is_owner = 1",
+            (lid, username),
+        ).fetchone():
+            return False, "not_a_member"
+        conn.execute(
+            "UPDATE memberships SET is_owner = 0 WHERE leaderboard_id = ? AND username = ?",
+            (lid, username),
+        )
+    return True, "owner_demoted"
+
+
+def delete_group(lid, actor):
+    """Delete a group and its memberships. Allowed for its owner(s) or admin."""
+    if actor != ADMIN_USER and not can_manage_group(lid, actor):
+        return False, "not_allowed"
     with get_db() as conn:
         conn.execute("DELETE FROM leaderboards WHERE id = ?", (lid,))
         conn.execute("DELETE FROM memberships WHERE leaderboard_id = ?", (lid,))
@@ -214,54 +299,70 @@ def delete_leaderboard(lid):
             conn.execute("DELETE FROM sqlite_sequence WHERE name = 'leaderboards'")
             conn.execute("INSERT INTO sqlite_sequence (name, seq) VALUES ('leaderboards', ?)",
                          (len(rows),))
-    return True, "leaderboard_removed"
+    return True, "group_removed"
 
 
-def my_leaderboards(username):
+def my_groups(username):
     with get_db() as conn:
         rows = conn.execute(
-            "SELECT l.id, l.name, l.access_code FROM leaderboards l "
-            "JOIN memberships m ON m.leaderboard_id = l.id "
+            "SELECT l.id, l.name, l.access_code, l.owner, m.is_owner "
+            "FROM leaderboards l JOIN memberships m ON m.leaderboard_id = l.id "
             "WHERE m.username = ? ORDER BY l.name",
             (username,),
         ).fetchall()
-    boards = []
-    for lid, name, code in rows:
-        members = leaderboard_members(lid)
-        boards.append({"id": lid, "name": name, "access_code": code,
-                       "members": members, "member_count": len(members)})
-    return boards
+    groups = []
+    for lid, name, code, owner, user_is_owner in rows:
+        members = group_members(lid)
+        groups.append({
+            "id": lid, "name": name, "access_code": code, "owner": owner,
+            "members": members, "member_count": len(members),
+            "user_is_owner": bool(user_is_owner),
+        })
+    return groups
 
 
-def all_leaderboards():
+def all_groups():
     with get_db() as conn:
-        rows = conn.execute("SELECT id, name, access_code FROM leaderboards ORDER BY name").fetchall()
-    boards = []
-    for lid, name, code in rows:
-        members = leaderboard_members(lid)
-        boards.append({"id": lid, "name": name, "access_code": code,
-                       "members": members, "member_count": len(members)})
-    return boards
+        rows = conn.execute(
+            "SELECT id, name, access_code, owner FROM leaderboards ORDER BY name"
+        ).fetchall()
+    groups = []
+    for lid, name, code, owner in rows:
+        members = group_members(lid)
+        groups.append({
+            "id": lid, "name": name, "access_code": code, "owner": owner,
+            "members": members, "member_count": len(members),
+        })
+    return groups
 
 
-def rename_leaderboard(lid, new_name):
+def rename_group(lid, new_name, actor):
     if not new_name:
         return False, "name_empty"
+    if actor != ADMIN_USER and not can_manage_group(lid, actor):
+        return False, "not_allowed"
     with get_db() as conn:
+        if conn.execute(
+            "SELECT 1 FROM leaderboards WHERE name = ? AND id != ?", (new_name, lid)
+        ).fetchone():
+            return False, "group_exists"
         conn.execute("UPDATE leaderboards SET name = ? WHERE id = ?", (new_name, lid))
-    return True, "leaderboard_created"
+    return True, "group_renamed"
 
 
-def change_access_code(lid, new_code):
+def change_access_code(lid, new_code, actor):
+    new_code = new_code.strip()
     if not new_code:
-        return False, "name_empty"
+        return False, "code_empty"
+    if actor != ADMIN_USER and not can_manage_group(lid, actor):
+        return False, "not_allowed"
     with get_db() as conn:
         conn.execute("UPDATE leaderboards SET access_code = ? WHERE id = ?", (new_code, lid))
-    return True, "leaderboard_created"
+    return True, "code_changed"
 
 
 def rename_user(old, new):
-    """Rename an account, moving its data and leaderboard memberships."""
+    """Rename an account, moving its data and group memberships."""
     if old.strip() == ADMIN_USER:
         return False, "cannot_rename_admin"
     if not new.strip():
@@ -276,6 +377,7 @@ def rename_user(old, new):
         conn.execute("UPDATE users SET username = ? WHERE username = ?", (new, old))
         conn.execute("UPDATE user_data SET username = ? WHERE username = ?", (new, old))
         conn.execute("UPDATE memberships SET username = ? WHERE username = ?", (new, old))
+        conn.execute("UPDATE leaderboards SET owner = ? WHERE owner = ?", (new, old))
     return True, "username_changed"
 
 
@@ -285,9 +387,7 @@ def rank_users(usernames):
     today = date.today()
     for user in usernames:
         data = load_user_data(user)
-        day_s, week_s, month_s = compute_streaks(
-            build_all_days(data), diet_categories(data), today
-        )
+        day_s, week_s, month_s = streaks_with_carry(data, today)
         board.append((user, day_s, week_s, month_s, diet_score(day_s, week_s, month_s)))
     board.sort(key=lambda r: r[4], reverse=True)
     return board
@@ -324,6 +424,9 @@ def default_data():
         "budget_period": "month",
         "budget_limit": 8000,
         "spends": {},
+        "streak_carry": {},
+        "budget_carry": {},
+        "period_log": {},
     }
 
 
@@ -346,6 +449,12 @@ def load_user_data(username):
             data.setdefault("spends", {})
             data.setdefault("budget_period", "month")
             data.setdefault("budget_limit", 8000)
+            data.setdefault("streak_carry", {})
+            data.setdefault("budget_carry", {})
+            if "period_pending" in data:
+                data.pop("period_pending", None)
+                data.setdefault("period_log", {})
+            data.setdefault("period_log", {})
             return data
     return default_data()
 
@@ -357,6 +466,174 @@ def save_user_data(username, data):
             "ON CONFLICT(username) DO UPDATE SET json = excluded.json",
             (username, json.dumps(data)),
         )
+
+
+# ------------------------------------------------ storage limit + streaks
+
+def stored_day_count(data):
+    """Distinct dates that store any diet or budget data."""
+    days = {k for k, v in (data.get("days") or {}).items() if v}
+    spends = {k for k, v in (data.get("spends") or {}).items() if v}
+    return len(days | spends)
+
+
+def storage_full(data):
+    return stored_day_count(data) >= MAX_DAYS
+
+
+def storage_blocker(data, day):
+    """True when `day` is brand new (still no data) and storage is full."""
+    if not storage_full(data):
+        return False
+    iso = day.isoformat()
+    return not ((data.get("days", {}).get(iso)) or (data.get("spends", {}).get(iso)))
+
+
+def _ordered_stored_dates(data):
+    keys = {k for k, v in (data.get("days") or {}).items() if v}
+    keys |= {k for k, v in (data.get("spends") or {}).items() if v}
+    return sorted(keys)
+
+
+def _new_period_log(kind, start):
+    """Fresh incremental tracker for the boundary week/month.
+
+    `dates` lists the ISO dates dropped while they belonged to this period (in
+    chronological order); `ok` records that every dropped diet day was
+    compliant; `spent`/`has_entries` accumulate the dropped spend."""
+    total = 7 if kind == "week" else calendar.monthrange(start.year, start.month)[1]
+    return {"start": start.isoformat(), "total": total,
+            "dates": [], "ok": True, "spent": 0, "has_entries": False}
+
+
+def _log_complete(lg):
+    return lg is not None and len(lg.get("dates", ())) >= lg.get("total", 0) and lg["ok"]
+
+
+def _refresh_carry_on_drop(data, d0, d1):
+    """Bank streak counts before the oldest stored day `d0` is dropped.
+
+    The new boundary is `d1` (next-oldest date, or None when nothing remains).
+    A day carry grows by one when the dropped day was compliant and rows still
+    in storage sit on the very next day; any gap or over-limit day resets it.
+    Week/month carries are banked from an incremental period log that records
+    every day as it drops out, so a period counts even when the storage window
+    can never hold it whole. Streaks are added back only onto an unbroken run.
+    """
+    days = build_all_days(data)
+    cats = diet_categories(data)
+    spends = spends_objects(data)
+    base = data["budget_period"]
+    limit = int(data["budget_limit"])
+
+    sc = dict(data.get("streak_carry") or {})
+    bc = dict(data.get("budget_carry") or {})
+    log = dict(data.get("period_log") or {})
+
+    def reset_period_log(kind, key, d):
+        log[key] = _new_period_log(kind, period_start_of(kind, d))
+
+    if d1 is None:
+        data["streak_carry"] = {}
+        data["budget_carry"] = {}
+        data["period_log"] = {}
+        return
+
+    if d0.isoformat() in (data.get("days") or {}):
+        d_ok = d0 in days and days[d0].entries and categories_satisfied(days[d0], cats)
+        sc["day"] = (sc.get("day", 0) + 1) if (d1 == d0 + timedelta(days=1) and d_ok) else 0
+
+        for kind, key in (("week", "dweek"), ("month", "dmonth")):
+            p0, p1 = period_start_of(kind, d0), period_start_of(kind, d1)
+            lg = log.get(key)
+            if not lg or lg.get("start") != p0.isoformat():
+                lg = _new_period_log(kind, p0)
+                log[key] = lg
+            lg["dates"].append(d0.isoformat())
+            lg["ok"] = lg["ok"] and d_ok
+            if p1 == p0:
+                log[key] = lg
+            elif p1 == next_period_start(kind, p0):
+                if _log_complete(lg):
+                    sc[kind] = sc.get(kind, 0) + 1
+                else:
+                    sc[kind] = 0
+                reset_period_log(kind, key, d1)
+            else:
+                sc[kind] = 0
+                reset_period_log(kind, key, d1)
+
+    if d0.isoformat() in (data.get("spends") or {}):
+        for kind in ("day", "week", "month"):
+            if budget_allowance_factor(base, kind, d0) is None:
+                continue
+            p0, p1 = period_start_of(kind, d0), period_start_of(kind, d1)
+            if kind == "day":
+                expenses = period_expenses(spends, kind, d0)
+                comp = bool(expenses) and sum(int(e.price.amount) for e in expenses) <= \
+                    limit * budget_allowance_factor(base, kind, d0)
+                bc[kind] = (bc.get(kind, 0) + 1) if (p1 == next_period_start(kind, p0) and comp) else 0
+                continue
+            key = "b" + kind
+            lg = log.get(key)
+            if not lg or lg.get("start") != p0.isoformat():
+                lg = _new_period_log(kind, p0)
+                log[key] = lg
+            exp = period_expenses(spends, kind, d0)
+            spent = sum(int(e.price.amount) for e in exp)
+            lg["dates"].append(d0.isoformat())
+            lg["spent"] = lg.get("spent", 0) + spent
+            lg["has_entries"] = lg.get("has_entries", False) or bool(exp)
+            if p1 == p0:
+                log[key] = lg
+            elif p1 == next_period_start(kind, p0):
+                if (_log_complete(lg) and lg["has_entries"]
+                        and lg["spent"] <= limit * budget_allowance_factor(base, kind, d0)):
+                    bc[kind] = bc.get(kind, 0) + 1
+                else:
+                    bc[kind] = 0
+                reset_period_log(kind, key, d1)
+            else:
+                bc[kind] = 0
+                reset_period_log(kind, key, d1)
+
+    data["streak_carry"] = {k: v for k, v in sc.items() if v}
+    data["budget_carry"] = {k: v for k, v in bc.items() if v}
+    data["period_log"] = log
+
+
+def drop_oldest_day(data):
+    """Remove the single oldest stored day, banking streaks first."""
+    keys = _ordered_stored_dates(data)
+    if not keys:
+        return False
+    d0 = date.fromisoformat(keys[0])
+    d1 = date.fromisoformat(keys[1]) if len(keys) > 1 else None
+    _refresh_carry_on_drop(data, d0, d1)
+    data.get("days", {}).pop(keys[0], None)
+    data.get("spends", {}).pop(keys[0], None)
+    return True
+
+
+def drop_n_oldest(data, n):
+    for _ in range(int(n)):
+        if not drop_oldest_day(data):
+            break
+
+
+def streaks_with_carry(data, ref_date):
+    days = build_all_days(data)
+    log = data.get("period_log") or {}
+    return compute_streaks(days, diet_categories(data), ref_date,
+                           data.get("streak_carry") or {}, log)
+
+
+def budget_streaks_with_carry(data, ref_date):
+    spends = spends_objects(data)
+    log = data.get("period_log") or {}
+    return compute_budget_streaks(spends, data["budget_period"],
+                                  int(data["budget_limit"]), ref_date,
+                                  data.get("budget_carry") or {}, log)
 
 
 # ------------------------------------------------------------ data helpers
@@ -832,6 +1109,36 @@ def spending_table(data, day, editable=True):
 
 # ------------------------------------------------------------- combined
 
+def storage_prompt(data):
+    """Shown when storage is full and the selected day is brand new: the user
+    must delete old day(s) before adding data to a new day."""
+    used = stored_day_count(data)
+    st.warning(tr("day_limit_reached").format(max=MAX_DAYS))
+    st.caption(tr("streak_preserved_note"))
+    c1, c2 = st.columns([1, 2])
+    with c1:
+        n = st.number_input(tr("days_to_delete"), min_value=1, max_value=used,
+                            value=1, key="st_del_n")
+    with c2:
+        if st.button(tr("delete_oldest_day"), key="st_del_btn"):
+            st.session_state["st_del_conf"] = True
+            st.rerun()
+    if st.session_state.get("st_del_conf"):
+        st.warning(tr("delete_oldest_confirm"))
+        d1, d2 = st.columns(2)
+        with d1:
+            if st.button(tr("confirm"), key="st_del_yes"):
+                drop_n_oldest(data, int(n))
+                st.session_state.pop("st_del_conf", None)
+                st.session_state.data = data
+                save_user_data(st.session_state.user, data)
+                st.rerun()
+        with d2:
+            if st.button(tr("cancel"), key="st_del_no"):
+                st.session_state.pop("st_del_conf", None)
+                st.rerun()
+
+
 def render_diet_section(data, selected):
     st.markdown(f"#### {tr('diet')}")
     with st.expander(tr("category_limits")):
@@ -852,7 +1159,10 @@ def render_diet_section(data, selected):
             st.rerun()
 
     if view == "add":
-        food_form(data, selected)
+        if storage_blocker(data, selected):
+            storage_prompt(data)
+        else:
+            food_form(data, selected)
     else:
         food_table(data, selected)
 
@@ -871,7 +1181,7 @@ def render_diet_section(data, selected):
         st.write(tr("no_entries"))
 
     st.markdown("##### " + tr("streaks"))
-    day_s, week_s, month_s = compute_streaks(build_all_days(data), cats, selected)
+    day_s, week_s, month_s = streaks_with_carry(data, selected)
     st.write(f"{tr('day')}: {day_s}  |  {tr('week')}: {week_s}  |  {tr('month')}: {month_s}")
 
     rank_key, score = diet_rank(day_s, week_s, month_s)
@@ -909,7 +1219,10 @@ def render_budget_section(data, selected):
             st.rerun()
 
     if view == "add":
-        spending_form(data, selected)
+        if storage_blocker(data, selected):
+            storage_prompt(data)
+        else:
+            spending_form(data, selected)
     else:
         spending_table(data, selected)
 
@@ -922,48 +1235,89 @@ def render_budget_section(data, selected):
     st.write(tr("over_limit") if total > limit else tr("within_limit"))
 
     st.markdown("##### " + tr("streaks"))
-    streaks = compute_budget_streaks(spends, period, limit, selected)
+    streaks = budget_streaks_with_carry(data, selected)
     labels = {"day": tr("day"), "week": tr("week"), "month": tr("month")}
     st.write("  |  ".join(f"{labels[k]}: {v}" for k, v in streaks.items()))
 
 
-def leaderboards_section():
-    """Create/join leaderboards and show rankings of the boards you're in."""
-    st.markdown(f"### 🏆 {tr('leaderboards')}")
-    boards = my_leaderboards(st.session_state.user)
+def show_records(data, day):
+    """Read-only diet/budget records of one user for a chosen day."""
+    day_obj = build_day(data, day)
+    cats = diet_categories(data)
+    st.markdown(f"**{tr('diet')}**")
+    if day_obj.entries:
+        parts = []
+        for key, cat in cats.items():
+            total = day_obj.sum_of(key, cat.unit)
+            parts.append(f"{cat.name}: {total.amount:g} {unit_display(total.unit)}" + (" 🔴" if total.amount > cat.limit else " ✅"))
+        st.write("  |  ".join(parts))
+    else:
+        st.write(tr("no_entries"))
+    food_table(data, day, False)
+
+    st.markdown(f"**{tr('budget')}**")
+    spends = spends_objects(data)
+    period = data["budget_period"]
+    limit = data["budget_limit"]
+    total = sum(int(e.price.amount) for e in period_expenses(spends, period, day))
+    flag = tr("over_limit") if total > limit else tr("within_limit")
+    st.write(f"{tr(period)} {tr('total')}: {total} HKD / {tr('limit_hkd')}: {limit} | {flag}")
+    spending_table(data, day, False)
+
+
+def view_member_records(gid):
+    """Group owners: read-only records of a chosen member."""
+    members = group_members(gid)
+    usernames = [m["username"] for m in members]
+    if not usernames:
+        st.info(tr("no_members_yet"))
+        return
+    target = st.selectbox(tr("user"), usernames, key=f"grp_rec_sel_{gid}")
+    data = load_user_data(target)
+    selected = calendar_widget(
+        f"grp_{gid}_{target}", lambda d: (diet_status(data, d), budget_status(data, d))
+    )
+    st.subheader(f"{target} · {format_date(selected)}")
+    show_records(data, selected)
+
+
+def groups_section():
+    """Create/join groups, view the group leaderboard, and manage owned groups."""
+    st.markdown(f"### 🏆 {tr('groups')}")
+    groups = my_groups(st.session_state.user)
     options = {
-        "➕ " + tr("add_leaderboard"): ("form", "add"),
-        "➕ " + tr("join_leaderboard"): ("form", "join"),
+        "➕ " + tr("add_group"): ("form", "add"),
+        "➕ " + tr("join_group"): ("form", "join"),
     }
-    for b in boards:
-        options[f"{b['name']} ({b['member_count']} {tr('members')})"] = ("board", b)
+    for g in groups:
+        options[f"{g['name']} ({g['member_count']} {tr('members')})"] = ("group", g)
     labels = list(options)
-    default = 2 if boards else 0
-    choice = st.selectbox(tr("leaderboards"), labels, index=default, key="lb_dd")
+    default = 2 if groups else 0
+    choice = st.selectbox(tr("groups"), labels, index=default, key="grp_dd")
     kind, payload = options[choice]
 
     if kind == "form":
         if payload == "add":
-            with st.form("lb_create"):
-                lb_name = st.text_input(tr("leaderboard_name"), key="lb_name")
-                lb_code = st.text_input(tr("access_code"), type="password", key="lb_code")
-                if st.form_submit_button(tr("create_leaderboard")):
-                    ok, key = create_leaderboard(lb_name.strip(), lb_code.strip(), st.session_state.user)
+            with st.form("grp_create"):
+                g_name = st.text_input(tr("group_name"), key="grp_name")
+                g_code = st.text_input(tr("access_code"), type="password", key="grp_code")
+                if st.form_submit_button(tr("create_group")):
+                    ok, key = create_group(g_name.strip(), g_code.strip(), st.session_state.user)
                     if ok:
-                        for k in ("lb_name", "lb_code"):
+                        for k in ("grp_name", "grp_code"):
                             st.session_state.pop(k, None)
                         st.success(tr(key))
                         st.rerun()
                     else:
                         st.error(tr(key))
         else:
-            with st.form("lb_join"):
-                jb_name = st.text_input(tr("leaderboard_name"), key="jb_name")
-                jb_code = st.text_input(tr("access_code"), type="password", key="jb_code")
-                if st.form_submit_button(tr("join_leaderboard")):
-                    ok, key = join_leaderboard(jb_name.strip(), jb_code.strip(), st.session_state.user)
+            with st.form("grp_join"):
+                jg_name = st.text_input(tr("group_name"), key="jg_name")
+                jg_code = st.text_input(tr("access_code"), type="password", key="jg_code")
+                if st.form_submit_button(tr("join_group")):
+                    ok, key = join_group(jg_name.strip(), jg_code.strip(), st.session_state.user)
                     if ok:
-                        for k in ("jb_name", "jb_code"):
+                        for k in ("jg_name", "jg_code"):
                             st.session_state.pop(k, None)
                         st.success(tr(key))
                         st.rerun()
@@ -971,10 +1325,15 @@ def leaderboards_section():
                         st.error(tr(key))
         return
 
-    board = payload
+    group = payload
+    me = st.session_state.user
+    owner_names = [m["username"] for m in group["members"] if m["is_owner"]]
+    st.caption(f"{tr('owner')}: {', '.join(owner_names) or '—'}")
     rows = []
-    for place, (user, d, w, m, score) in enumerate(rank_users(board["members"]), start=1):
-        mark = " ★" if user == st.session_state.user else ""
+    for place, (user, d, w, m, score) in enumerate(
+        rank_users([x["username"] for x in group["members"]]), start=1
+    ):
+        mark = " ★" if user == me else ""
         rank_key, _ = diet_rank(d, w, m)
         rows.append({
             tr("rank_title"): place,
@@ -985,30 +1344,114 @@ def leaderboards_section():
             tr("score"): score,
             tr("tier"): tr(rank_key),
         })
-    st.caption(f"{tr('members')}: {', '.join(board['members']) or '—'}")
-    if st.session_state.get(f"lb_leave_conf_{board['id']}"):
-        st.warning(tr("leave_confirm"))
-        c1, c2 = st.columns(2)
-        with c1:
-            if st.button(tr("confirm"), key=f"lb_leave_yes_{board['id']}"):
-                leave_leaderboard(board["id"], st.session_state.user)
-                st.session_state.pop(f"lb_leave_conf_{board['id']}", None)
-                st.session_state.pop("lb_dd", None)
-                st.success(tr("leaderboard_left"))
-                st.rerun()
-        with c2:
-            if st.button(tr("cancel"), key=f"lb_leave_no_{board['id']}"):
-                st.session_state.pop(f"lb_leave_conf_{board['id']}", None)
-                st.rerun()
-    else:
-        if st.button(tr("leave_leaderboard"), key=f"lb_leave_{board['id']}"):
-            st.session_state[f"lb_leave_conf_{board['id']}"] = True
-            st.rerun()
-    with st.container(height=460):
+    with st.container(height=400):
         if rows:
             st.table(rows)
         else:
             st.info(tr("no_members_yet"))
+
+    if group["user_is_owner"]:
+        st.divider()
+        st.markdown(f"##### 👑 {tr('group_management')}")
+        for m in group["members"]:
+            badge = " 👑" if m["is_owner"] else ""
+            if m["username"] == me:
+                st.write(f"**{m['username']}**{badge} ★")
+                continue
+            c1, c2, c3 = st.columns([6, 1, 1])
+            c1.write(f"**{m['username']}**{badge}")
+            if m["is_owner"]:
+                if c2.button(tr("demote"), key=f"g_demote_{group['id']}_{m['username']}"):
+                    demote_owner(group["id"], m["username"], me)
+                    st.success(tr("owner_demoted"))
+                    st.rerun()
+            else:
+                if c2.button(tr("promote"), key=f"g_promote_{group['id']}_{m['username']}"):
+                    promote_owner(group["id"], m["username"], me)
+                    st.success(tr("owner_promoted"))
+                    st.rerun()
+            if c3.button(tr("kick"), key=f"g_kick_{group['id']}_{m['username']}"):
+                st.session_state[f"g_kick_conf_{group['id']}_{m['username']}"] = True
+                st.rerun()
+            if st.session_state.get(f"g_kick_conf_{group['id']}_{m['username']}"):
+                st.warning(tr("kick_confirm").format(name=m["username"]))
+                k1, k2 = st.columns(2)
+                with k1:
+                    if st.button(tr("confirm"), key=f"g_kick_yes_{group['id']}_{m['username']}"):
+                        kick_member(group["id"], m["username"], me)
+                        st.session_state.pop(f"g_kick_conf_{group['id']}_{m['username']}", None)
+                        st.success(tr("member_kicked"))
+                        st.rerun()
+                with k2:
+                    if st.button(tr("cancel"), key=f"g_kick_no_{group['id']}_{m['username']}"):
+                        st.session_state.pop(f"g_kick_conf_{group['id']}_{m['username']}", None)
+                        st.rerun()
+
+        c1, c2 = st.columns(2)
+        with c1:
+            with st.form(f"g_name_{group['id']}"):
+                new_name = st.text_input(tr("group_name"), value=group["name"],
+                                         key=f"gn_{group['id']}")
+                if st.form_submit_button(tr("change_name")):
+                    ok, key = rename_group(group["id"], new_name.strip(), me)
+                    if ok:
+                        st.success(tr(key))
+                        st.rerun()
+                    else:
+                        st.error(tr(key))
+        with c2:
+            with st.form(f"g_code_{group['id']}"):
+                new_code = st.text_input(tr("access_code"), value=group["access_code"],
+                                         key=f"gc_{group['id']}")
+                if st.form_submit_button(tr("change_code")):
+                    ok, key = change_access_code(group["id"], new_code.strip(), me)
+                    if ok:
+                        st.success(tr(key))
+                        st.rerun()
+                    else:
+                        st.error(tr(key))
+
+        if st.button(tr("remove_group"), key=f"g_del_btn_{group['id']}"):
+            st.session_state[f"g_del_conf_{group['id']}"] = True
+            st.rerun()
+        if st.session_state.get(f"g_del_conf_{group['id']}"):
+            st.warning(tr("delete_warning"))
+            d1, d2 = st.columns(2)
+            with d1:
+                if st.button(tr("confirm"), key=f"g_del_yes_{group['id']}"):
+                    delete_group(group["id"], me)
+                    st.session_state.pop(f"g_del_conf_{group['id']}", None)
+                    st.session_state.pop("grp_dd", None)
+                    st.success(tr("group_removed"))
+                    st.rerun()
+            with d2:
+                if st.button(tr("cancel"), key=f"g_del_no_{group['id']}"):
+                    st.session_state.pop(f"g_del_conf_{group['id']}", None)
+                    st.rerun()
+
+        st.divider()
+        st.markdown(f"##### {tr('view_member_records')}")
+        view_member_records(group["id"])
+    else:
+        st.divider()
+        if st.session_state.get(f"g_leave_conf_{group['id']}"):
+            st.warning(tr("leave_confirm"))
+            c1, c2 = st.columns(2)
+            with c1:
+                if st.button(tr("confirm"), key=f"g_leave_yes_{group['id']}"):
+                    leave_group(group["id"], me)
+                    st.session_state.pop(f"g_leave_conf_{group['id']}", None)
+                    st.session_state.pop("grp_dd", None)
+                    st.success(tr("group_left"))
+                    st.rerun()
+            with c2:
+                if st.button(tr("cancel"), key=f"g_leave_no_{group['id']}"):
+                    st.session_state.pop(f"g_leave_conf_{group['id']}", None)
+                    st.rerun()
+        else:
+            if st.button(tr("leave_group"), key=f"g_leave_{group['id']}"):
+                st.session_state[f"g_leave_conf_{group['id']}"] = True
+                st.rerun()
 
 
 def admin_panel():
@@ -1079,19 +1522,20 @@ def admin_panel():
                 st.error(tr(key))
 
 
-def admin_leaderboards():
-    """Admin view of every leaderboard: create, rename, change its access code, or remove it."""
-    st.markdown(f"### 🏆 {tr('leaderboards')}")
-    with st.form("adm_lb_create"):
+def admin_groups():
+    """Admin view of every group: create, rename, change access code, remove.
+    Members are only visible (and kickable) in groups the admin created."""
+    st.markdown(f"### 🏆 {tr('groups')}")
+    with st.form("adm_grp_create"):
         c1, c2 = st.columns(2)
         with c1:
-            alb_name = st.text_input(tr("leaderboard_name"), key="alb_name")
+            ag_name = st.text_input(tr("group_name"), key="ag_name")
         with c2:
-            alb_code = st.text_input(tr("access_code"), type="password", key="alb_code")
-        if st.form_submit_button(tr("create_leaderboard")):
-            ok, key = create_leaderboard(alb_name.strip(), alb_code.strip(), None)
+            ag_code = st.text_input(tr("access_code"), type="password", key="ag_code")
+        if st.form_submit_button(tr("create_group")):
+            ok, key = create_group(ag_name.strip(), ag_code.strip(), None)
             if ok:
-                for k in ("alb_name", "alb_code"):
+                for k in ("ag_name", "ag_code"):
                     st.session_state.pop(k, None)
                 st.success(tr(key))
                 st.rerun()
@@ -1099,135 +1543,101 @@ def admin_leaderboards():
                 st.error(tr(key))
     st.divider()
 
-    boards = all_leaderboards()
-    if not boards:
-        st.info(tr("no_leaderboards"))
+    groups = all_groups()
+    if not groups:
+        st.info(tr("no_groups"))
         return
-    st.caption(tr("all_leaderboards"))
+    st.caption(tr("all_groups"))
     with st.container(height=460):
-        for b in boards:
+        for g in groups:
+            is_admin_group = g["owner"] == ADMIN_USER
+            member_txt = ", ".join(m["username"] for m in g["members"]) if is_admin_group else "—"
             st.write(
-                f"**{b['name']}** (id {b['id']}) · {tr('access_code')}: `{b['access_code']}` · "
-                f"{tr('members')}: {', '.join(b['members']) or '—'}"
+                f"**{g['name']}** (id {g['id']}) · {tr('owner')}: {g['owner']} · "
+                f"{tr('access_code')}: `{g['access_code']}` · "
+                f"{tr('members')}: {member_txt or '—'}"
             )
             c1, c2, c3 = st.columns(3)
             with c1:
-                with st.form(f"adm_lb_name_{b['id']}"):
-                    new_name = st.text_input(tr("leaderboard_name"), value=b["name"],
-                                             key=f"lbn_{b['id']}")
+                with st.form(f"adm_grp_name_{g['id']}"):
+                    new_name = st.text_input(tr("group_name"), value=g["name"],
+                                             key=f"agn_{g['id']}")
                     if st.form_submit_button(tr("change_name")):
-                        rename_leaderboard(b["id"], new_name.strip())
-                        st.rerun()
+                        ok, key = rename_group(g["id"], new_name.strip(), ADMIN_USER)
+                        if ok:
+                            st.success(tr(key))
+                            st.rerun()
+                        else:
+                            st.error(tr(key))
             with c2:
-                with st.form(f"adm_lb_code_{b['id']}"):
-                    new_code = st.text_input(tr("access_code"), value=b["access_code"],
-                                             key=f"lbc_{b['id']}")
+                with st.form(f"adm_grp_code_{g['id']}"):
+                    new_code = st.text_input(tr("access_code"), value=g["access_code"],
+                                             key=f"agc_{g['id']}")
                     if st.form_submit_button(tr("change_code")):
-                        change_access_code(b["id"], new_code.strip())
-                        st.rerun()
+                        ok, key = change_access_code(g["id"], new_code.strip(), ADMIN_USER)
+                        if ok:
+                            st.success(tr(key))
+                            st.rerun()
+                        else:
+                            st.error(tr(key))
             with c3:
-                if st.session_state.get(f"adm_lb_del_{b['id']}"):
+                if st.session_state.get(f"adm_gdel_{g['id']}"):
                     st.warning(tr("delete_warning"))
                     rc1, rc2 = st.columns(2)
                     with rc1:
-                        if st.button(tr("confirm"), key=f"adm_lb_del_yes_{b['id']}"):
-                            delete_leaderboard(b["id"])
-                            st.session_state.pop(f"adm_lb_del_{b['id']}", None)
-                            st.success(tr("leaderboard_removed"))
+                        if st.button(tr("confirm"), key=f"adm_gdel_yes_{g['id']}"):
+                            delete_group(g["id"], ADMIN_USER)
+                            st.session_state.pop(f"adm_gdel_{g['id']}", None)
+                            st.success(tr("group_removed"))
                             st.rerun()
                     with rc2:
-                        if st.button(tr("cancel"), key=f"adm_lb_del_no_{b['id']}"):
-                            st.session_state.pop(f"adm_lb_del_{b['id']}", None)
+                        if st.button(tr("cancel"), key=f"adm_gdel_no_{g['id']}"):
+                            st.session_state.pop(f"adm_gdel_{g['id']}", None)
                             st.rerun()
                 else:
-                    if st.button(tr("remove_leaderboard"), key=f"adm_lb_del_btn_{b['id']}"):
-                        st.session_state[f"adm_lb_del_{b['id']}"] = True
+                    if st.button(tr("remove_group"), key=f"adm_gdel_btn_{g['id']}"):
+                        st.session_state[f"adm_gdel_{g['id']}"] = True
                         st.rerun()
-            if b["members"]:
+            if is_admin_group and g["members"]:
                 kick_sel = st.selectbox(
-                    tr("kick_member"), b["members"], key=f"adm_kick_sel_{b['id']}"
+                    tr("kick_member"), [m["username"] for m in g["members"]],
+                    key=f"adm_gkick_sel_{g['id']}",
                 )
-                if st.button(tr("kick"), key=f"adm_kick_btn_{b['id']}"):
-                    st.session_state[f"adm_kick_conf_{b['id']}"] = kick_sel
+                if st.button(tr("kick"), key=f"adm_gkick_btn_{g['id']}"):
+                    st.session_state[f"adm_gkick_conf_{g['id']}"] = kick_sel
                     st.rerun()
-                target = st.session_state.get(f"adm_kick_conf_{b['id']}")
+                target = st.session_state.get(f"adm_gkick_conf_{g['id']}")
                 if target:
                     st.warning(tr("kick_confirm").format(name=target))
                     k1, k2 = st.columns(2)
                     with k1:
-                        if st.button(tr("confirm"), key=f"adm_kick_yes_{b['id']}"):
-                            kick_member(b["id"], target)
-                            st.session_state.pop(f"adm_kick_conf_{b['id']}", None)
-                            st.session_state.pop(f"adm_kick_sel_{b['id']}", None)
+                        if st.button(tr("confirm"), key=f"adm_gkick_yes_{g['id']}"):
+                            kick_member(g["id"], target, ADMIN_USER)
+                            st.session_state.pop(f"adm_gkick_conf_{g['id']}", None)
+                            st.session_state.pop(f"adm_gkick_sel_{g['id']}", None)
                             st.success(tr("member_kicked"))
                             st.rerun()
                     with k2:
-                        if st.button(tr("cancel"), key=f"adm_kick_no_{b['id']}"):
-                            st.session_state.pop(f"adm_kick_conf_{b['id']}", None)
+                        if st.button(tr("cancel"), key=f"adm_gkick_no_{g['id']}"):
+                            st.session_state.pop(f"adm_gkick_conf_{g['id']}", None)
                             st.rerun()
             st.divider()
-
-
-def admin_show_date(data, day):
-    """Read-only view of one user's diet/budget records for a chosen day."""
-    day_obj = build_day(data, day)
-    cats = diet_categories(data)
-    st.markdown(f"**{tr('diet')}**")
-    if day_obj.entries:
-        parts = []
-        for key, cat in cats.items():
-            total = day_obj.sum_of(key, cat.unit)
-            parts.append(f"{cat.name}: {total.amount:g} {unit_display(total.unit)}" + (" 🔴" if total.amount > cat.limit else " ✅"))
-        st.write("  |  ".join(parts))
-    else:
-        st.write(tr("no_entries"))
-    food_table(data, day, False)
-
-    st.markdown(f"**{tr('budget')}**")
-    spends = spends_objects(data)
-    period = data["budget_period"]
-    limit = data["budget_limit"]
-    total = sum(int(e.price.amount) for e in period_expenses(spends, period, day))
-    flag = tr("over_limit") if total > limit else tr("within_limit")
-    st.write(f"{tr(period)} {tr('total')}: {total} HKD / {tr('limit_hkd')}: {limit} | {flag}")
-    spending_table(data, day, False)
 
 
 def render_admin_view():
     with st.expander("🛡️ " + tr("admin_panel"), expanded=True):
         admin_panel()
-    with st.expander("🏆 " + tr("leaderboards")):
-        admin_leaderboards()
-    target = st.session_state.get("adm_target")
-    query = (st.session_state.get("adm_search") or "").strip().lower()
-    if not target or (query and query not in target.lower()):
-        return
-    data = load_user_data(target)
-    cats = diet_categories(data)
-    ctext = ", ".join(f"{c['name']} ({unit_display(c['unit'])}): {c['limit']}" for c in data["diet_categories"].values())
-    st.write(f"{tr('category_limits')}: {ctext}")
-    today = date.today()
-    day_s, week_s, month_s = compute_streaks(build_all_days(data), cats, today)
-    rank_key, score = diet_rank(day_s, week_s, month_s)
-    st.write(
-        f"{tr('streaks')}: {tr('day')} {day_s} | {tr('week')} {week_s} | "
-        f"{tr('month')} {month_s} | 🏆 {tr(rank_key)} ({score})"
-    )
-
-    st.markdown(f"### {tr('view_records')} · {target}")
-    selected = calendar_widget(
-        "admin_" + target, lambda d: (diet_status(data, d), budget_status(data, d))
-    )
-    st.subheader(format_date(selected))
-    admin_show_date(data, selected)
-    st.divider()
+    with st.expander("🏆 " + tr("groups")):
+        admin_groups()
 
 
 def render_app(data):
     if st.session_state.user == ADMIN_USER:
         render_admin_view()
         return
-    leaderboards_section()
+    groups_section()
+    st.caption(tr("storage_usage").format(
+        used=stored_day_count(data), max=MAX_DAYS))
     selected = calendar_widget(
         "global", lambda d: (diet_status(data, d), budget_status(data, d))
     )

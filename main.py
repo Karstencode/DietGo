@@ -141,33 +141,54 @@ STRINGS = {
         "rank_marathoner": "Marathoner",
         "rank_disciplined": "Disciplined",
         "rank_legend": "Legend",
-        "leaderboard": "Leaderboard",
-        "leaderboards": "Leaderboards",
-        "create_leaderboard": "Create leaderboard",
-        "join_leaderboard": "Join leaderboard",
-        "add_leaderboard": "Add leaderboard",
-        "leaderboard_name": "Leaderboard name",
+        "groups": "Groups",
+        "group": "Group",
+        "group_name": "Group name",
         "access_code": "Access code",
-        "leaderboard_created": "Leaderboard created.",
-        "leaderboard_exists": "A leaderboard with this name already exists.",
-        "leaderboard_joined": "Joined leaderboard.",
-        "already_member": "You are already in this leaderboard.",
-        "wrong_access_code": "Leaderboard not found or wrong access code.",
-        "no_leaderboards": "You haven't joined any leaderboards yet.",
+        "create_group": "Create group",
+        "join_group": "Join group",
+        "add_group": "Add group",
+        "group_created": "Group created.",
+        "group_exists": "A group with this name already exists.",
+        "group_joined": "Joined group.",
+        "already_member": "You are already in this group.",
+        "wrong_access_code": "Group not found or wrong access code.",
+        "no_groups": "You haven't joined any groups yet.",
         "members": "Members",
+        "owner": "Owner",
         "change_name": "Change name",
         "change_code": "Change access code",
-        "remove_leaderboard": "Remove leaderboard",
-        "leaderboard_removed": "Leaderboard removed.",
-        "all_leaderboards": "All leaderboards",
-        "no_members_yet": "No members in this leaderboard yet.",
-        "leave_leaderboard": "Leave leaderboard",
-        "leaderboard_left": "You left the leaderboard.",
-        "leave_confirm": "Leave this leaderboard? You can rejoin later with its access code.",
+        "remove_group": "Remove group",
+        "group_removed": "Group removed.",
+        "all_groups": "All groups",
+        "no_members_yet": "No members in this group yet.",
+        "leave_group": "Leave group",
+        "group_left": "You left the group.",
+        "leave_confirm": "Leave this group? You can rejoin later with its access code.",
         "kick_member": "Kick member",
         "kick": "Kick",
-        "member_kicked": "Member removed from leaderboard.",
-        "kick_confirm": "Remove {name} from this leaderboard?",
+        "member_kicked": "Member removed from group.",
+        "kick_confirm": "Remove {name} from this group?",
+        "group_management": "Group management",
+        "promote_owner": "Make owner",
+        "promote": "Promote",
+        "demote_owner": "Remove owner status",
+        "demote": "Demote",
+        "owner_promoted": "Member is now a group owner.",
+        "owner_demoted": "Member is no longer a group owner.",
+        "view_member_records": "View member's records",
+        "not_allowed": "You don't have permission to do that.",
+        "not_a_member": "That user is not a member of this group.",
+        "group_renamed": "Group renamed.",
+        "code_changed": "Access code changed.",
+        "code_empty": "Access code cannot be empty.",
+        "created_by": "Created by",
+        "storage_usage": "Storage: {used}/{max} days",
+        "day_limit_reached": "Storage full — only {max} days can be stored. Delete old data to load a new day.",
+        "days_to_delete": "Days to delete",
+        "delete_oldest_day": "Delete oldest day(s)",
+        "delete_oldest_confirm": "Delete the oldest stored day? Your streaks are preserved and keep building.",
+        "streak_preserved_note": "Streaks are saved, so deleting old days won't break your streak.",
         "new_username": "New username",
         "rename_user": "Rename user",
         "username_changed": "Username updated.",
@@ -308,33 +329,54 @@ STRINGS = {
         "rank_marathoner": "馬拉松",
         "rank_disciplined": "自律",
         "rank_legend": "傳奇",
-        "leaderboard": "排行榜",
-        "leaderboards": "排行榜",
-        "create_leaderboard": "建立排行榜",
-        "join_leaderboard": "加入排行榜",
-        "add_leaderboard": "新增排行榜",
-        "leaderboard_name": "排行榜名稱",
+        "groups": "群組",
+        "group": "群組",
+        "group_name": "群組名稱",
         "access_code": "存取碼",
-        "leaderboard_created": "排行榜已建立。",
-        "leaderboard_exists": "已有同名排行榜。",
-        "leaderboard_joined": "已加入排行榜。",
-        "already_member": "你已在此排行榜中。",
-        "wrong_access_code": "排行榜不存在或存取碼錯誤。",
-        "no_leaderboards": "你尚未加入任何排行榜。",
+        "create_group": "建立群組",
+        "join_group": "加入群組",
+        "add_group": "新增群組",
+        "group_created": "群組已建立。",
+        "group_exists": "已有同名群組。",
+        "group_joined": "已加入群組。",
+        "already_member": "你已在此群組中。",
+        "wrong_access_code": "群組不存在或存取碼錯誤。",
+        "no_groups": "你尚未加入任何群組。",
         "members": "成員",
+        "owner": "擁有者",
         "change_name": "更改名稱",
         "change_code": "更改存取碼",
-        "remove_leaderboard": "移除排行榜",
-        "leaderboard_removed": "排行榜已移除。",
-        "all_leaderboards": "所有排行榜",
-        "no_members_yet": "此排行榜尚無成員。",
-        "leave_leaderboard": "退出排行榜",
-        "leaderboard_left": "你已退出排行榜。",
-        "leave_confirm": "退出此排行榜？你可以之後用存取碼重新加入。",
+        "remove_group": "移除群組",
+        "group_removed": "群組已移除。",
+        "all_groups": "所有群組",
+        "no_members_yet": "此群組尚無成員。",
+        "leave_group": "退出群組",
+        "group_left": "你已退出群組。",
+        "leave_confirm": "退出此群組？你可以之後用存取碼重新加入。",
         "kick_member": "踢除成員",
         "kick": "踢出",
-        "member_kicked": "成員已被移出排行榜。",
-        "kick_confirm": "將 {name} 移出此排行榜？",
+        "member_kicked": "成員已被移出群組。",
+        "kick_confirm": "將 {name} 移出此群組？",
+        "group_management": "群組管理",
+        "promote_owner": "設為擁有者",
+        "promote": "提升",
+        "demote_owner": "取消擁有者資格",
+        "demote": "取消",
+        "owner_promoted": "該成員已成為群組擁有者。",
+        "owner_demoted": "該成員已不是群組擁有者。",
+        "view_member_records": "查看成員記錄",
+        "not_allowed": "你沒有權限執行此操作。",
+        "not_a_member": "該用戶不是此群組的成員。",
+        "group_renamed": "群組已改名。",
+        "code_changed": "存取碼已更改。",
+        "code_empty": "存取碼不能為空。",
+        "created_by": "創建者",
+        "storage_usage": "儲存空間：{used}/{max} 天",
+        "day_limit_reached": "儲存空間已滿——最多只能儲存 {max} 天的資料。請先刪除舊資料，才能載入新的一天。",
+        "days_to_delete": "要刪除的天數",
+        "delete_oldest_day": "刪除最早的一天",
+        "delete_oldest_confirm": "要刪除最早儲存的一天嗎？你的連續記錄會被保留並持續累積。",
+        "streak_preserved_note": "連續記錄會被保存，刪除舊資料不會中斷你的連續記錄。",
         "new_username": "新用戶名",
         "rename_user": "更改用戶名",
         "username_changed": "用戶名已更新。",
@@ -454,50 +496,142 @@ def categories_satisfied(day_obj, categories):
     return True
 
 
-def compute_streaks(days, categories, ref_date):
+def period_met(days, categories, kind, start):
+    """True if every day in the period starting at `start` is logged and every
+    category's period total is within its limit.
+
+    `days` maps dates to DietDay objects; `kind` is one of
+    'day' | 'week' | 'month'; `start` is the period's first date."""
+    if kind == "day":
+        dates = [start]
+        allowance = 1
+    elif kind == "week":
+        dates = [start + timedelta(days=i) for i in range(7)]
+        allowance = 7
+    else:
+        n = calendar.monthrange(start.year, start.month)[1]
+        dates = [date(start.year, start.month, d) for d in range(1, n + 1)]
+        allowance = n
+    if not all(d in days and days[d].entries for d in dates):
+        return False
+    for key, cat in categories.items():
+        total = sum(int(days[d].sum_of(key, cat.unit).amount) for d in dates)
+        if total > cat.limit * allowance:
+            return False
+    return True
+
+
+def diet_log_verifies(days, categories, kind, start, lg):
+    """True when a period trimmed by the storage cap was fully logged and
+    compliant.
+
+    The oldest stored day sits inside a period whose earliest days were already
+    removed, so the normal `period_met` check fails. The saved incremental log
+    `lg` (matching this period's start) records every dropped day; when those
+    plus the days still stored make up the entire period, consecutively and all
+    within limits, the period counts toward the streak.
+    """
+    if not lg or lg.get("start") != start.isoformat() or not lg.get("ok", True):
+        return False
+    dropped = [date.fromisoformat(d) for d in lg.get("dates", ())]
+    nxt = next_period_start(kind, start)
+    stored = sorted(d for d in days if start <= d < nxt)
+    combined = dropped + stored
+    if len(combined) != lg.get("total"):
+        return False
+    if any(b != a + timedelta(days=1) for a, b in zip(combined, combined[1:])):
+        return False
+    return all(categories_satisfied(days[d], categories) for d in stored)
+
+
+def budget_log_verifies(spends, base, limit_amount, kind, start, lg):
+    """Most recent period check for the budget streaks.
+
+    Periods skip the daily-entry requirement, so a trimmed boundary period
+    counts when the amount it logged (dropped days, from `lg`, plus still-stored
+    days combined) stayed within the allowance."""
+    if not lg or lg.get("start") != start.isoformat():
+        return False
+    if not lg.get("has_entries"):
+        return False
+    nxt = next_period_start(kind, start)
+    stored_sum = 0
+    for d in (d for d in spends if start <= d < nxt):
+        for e in spends[d]:
+            stored_sum += int(e.price.amount)
+    return lg.get("spent", 0) + stored_sum <= \
+        limit_amount * budget_allowance_factor(base, kind, start)
+
+
+def compute_streaks(days, categories, ref_date, carry=None, logs=None):
     """Return (day_streak, week_streak, month_streak).
 
     A day counts when it is logged and every category is at or below its daily
     limit. Week/month: a period counts only after every day in the period has
     been logged, and only if every category's period total is at or below its
     daily limit times the number of days in the period.
-    """
-    def period_met(dates, allowance_days):
-        if not all(d in days and days[d].entries for d in dates):
-            return False
-        for key, cat in categories.items():
-            total = sum(int(days[d].sum_of(key, cat.unit).amount) for d in dates)
-            if total > cat.limit * allowance_days:
-                return False
-        return True
 
+    `carry` is an optional dict {'day', 'week', 'month'} of streak counts saved
+    from earlier days that were removed (to respect a storage limit). A carried
+    count is only added when the streak is otherwise unbroken all the way from
+    `ref_date` through the earliest stored day, so gaps or over-limit days still
+    break the streak. `logs` holds the incremental period logs used to verify
+    the one partially-trimmed boundary period.
+    """
+    carry = carry or {}
+    logs = logs or {}
     day_streak = 0
     cursor = ref_date
     while cursor in days and days[cursor].entries and categories_satisfied(days[cursor], categories):
         day_streak += 1
         cursor -= timedelta(days=1)
+    if day_streak and days and cursor == min(days) - timedelta(days=1):
+        day_streak += carry.get("day", 0)
 
     week_streak = 0
     cursor = ref_date
+    last_week = None
     while True:
         week_start = cursor - timedelta(days=cursor.weekday())
-        week_days = [week_start + timedelta(days=i) for i in range(7)]
-        if not period_met(week_days, 7):
+        if not period_met(days, categories, "week", week_start):
+            if days and period_start_of("week", min(days)) == week_start and \
+                    diet_log_verifies(days, categories, "week", week_start, logs.get("dweek")):
+                week_streak += 1
+                last_week = week_start
+                cursor = week_start - timedelta(days=1)
+                continue
             break
         week_streak += 1
+        last_week = week_start
         cursor = week_start - timedelta(days=1)
+    if week_streak and days and last_week is not None and min(days) < last_week + timedelta(days=7):
+        week_streak += carry.get("week", 0)
 
     month_streak = 0
     year, month = ref_date.year, ref_date.month
+    last_month = None
     while True:
-        n_days = calendar.monthrange(year, month)[1]
-        month_days = [date(year, month, d) for d in range(1, n_days + 1)]
-        if not period_met(month_days, n_days):
+        start = date(year, month, 1)
+        if not period_met(days, categories, "month", start):
+            if days and period_start_of("month", min(days)) == start and \
+                    diet_log_verifies(days, categories, "month", start, logs.get("dmonth")):
+                month_streak += 1
+                last_month = start
+                month -= 1
+                if month == 0:
+                    year, month = year - 1, 12
+                continue
             break
         month_streak += 1
+        last_month = start
         month -= 1
         if month == 0:
             year, month = year - 1, 12
+    if month_streak and days and last_month is not None:
+        next_month = date(last_month.year, last_month.month + 1, 1) if last_month.month < 12 \
+            else date(last_month.year + 1, 1, 1)
+        if min(days) < next_month:
+            month_streak += carry.get("month", 0)
 
     return day_streak, week_streak, month_streak
 
@@ -559,28 +693,71 @@ def previous_period_start(kind, cursor):
     return date(year, month, 1)
 
 
-def compute_budget_streaks(spends, base, limit_amount, ref_date):
+def period_start_of(kind, d):
+    """First date of the period ('day'|'week'|'month') containing `d`."""
+    if kind == "day":
+        return d
+    if kind == "week":
+        return d - timedelta(days=d.weekday())
+    return d.replace(day=1)
+
+
+def next_period_start(kind, d):
+    """First date of the period immediately after the one containing `d`."""
+    start = period_start_of(kind, d)
+    if kind == "day":
+        return start + timedelta(days=1)
+    if kind == "week":
+        return start + timedelta(days=7)
+    year, month = start.year, start.month + 1
+    if month == 13:
+        year, month = year + 1, 1
+    return date(year, month, 1)
+
+
+def compute_budget_streaks(spends, base, limit_amount, ref_date, carry=None, logs=None):
     """Streaks for each period available for the base limit period.
 
     day limit -> day, week, month streaks
     week limit -> week, month streaks
     month limit -> month streak only
+
+    `carry` is an optional dict {'day', 'week', 'month'} of streak counts saved
+    from periods that were removed (to respect a storage limit). A carried count
+    is only added when the streak is otherwise unbroken from `ref_date` back
+    through the earliest stored spend, so an empty or over-budget period still
+    breaks the streak. `logs` holds the incremental period logs used to verify
+    the one partially-trimmed boundary period.
     """
+    carry = carry or {}
+    logs = logs or {}
     streaks = {}
+    earliest = min(spends) if spends else None
     for kind in ("day", "week", "month"):
         if budget_allowance_factor(base, kind, ref_date) is None:
             continue
         streak = 0
         cursor = ref_date
+        last_period = None
         while True:
             expenses = period_expenses(spends, kind, cursor)
-            if not expenses:
-                break
             allowance = limit_amount * budget_allowance_factor(base, kind, cursor)
-            if sum(int(e.price.amount) for e in expenses) > allowance:
+            if not expenses or sum(int(e.price.amount) for e in expenses) > allowance:
+                if kind != "day" and spends and earliest is not None and \
+                        period_start_of(kind, earliest) == period_start_of(kind, cursor) and \
+                        budget_log_verifies(spends, base, limit_amount, kind,
+                                            period_start_of(kind, cursor), logs.get("b" + kind)):
+                    streak += 1
+                    last_period = cursor
+                    cursor = previous_period_start(kind, cursor)
+                    continue
                 break
             streak += 1
+            last_period = cursor
             cursor = previous_period_start(kind, cursor)
+        if streak and earliest is not None and last_period is not None and \
+                period_start_of(kind, earliest) == period_start_of(kind, last_period):
+            streak += carry.get(kind, 0)
         streaks[kind] = streak
     return streaks
 

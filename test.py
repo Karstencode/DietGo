@@ -344,8 +344,9 @@ def _logged(kcal, sugar=None):
     return day
 
 
-class TestLeaderboards(unittest.TestCase):
-    DB = os.path.join(tempfile.gettempdir(), "diet_budget_test_leaders.db")
+class TestGroups(unittest.TestCase):
+    """Group lifecycle: create/join/membership roles, owner management, permissions."""
+    DB = os.path.join(tempfile.gettempdir(), "diet_budget_test_groups.db")
 
     def setUp(self):
         webapp.DB_PATH = self.DB
@@ -365,128 +366,201 @@ class TestLeaderboards(unittest.TestCase):
             conn.execute("INSERT INTO user_data (username, json) VALUES (?,?)",
                          (name, json.dumps(webapp.default_data())))
 
+    def member_names(self, gid):
+        return [m["username"] for m in webapp.group_members(gid)]
+
     def test_create_and_join(self):
         self.add_user("alice")
         self.add_user("bob")
-        ok, key = webapp.create_leaderboard("Weight Loss", "abc123", "alice")
+        ok, key = webapp.create_group("Weight Loss", "abc123", "alice")
         self.assertTrue(ok)
-        self.assertEqual(key, "leaderboard_created")
-        my = webapp.my_leaderboards("alice")
+        self.assertEqual(key, "group_created")
+        my = webapp.my_groups("alice")
         self.assertEqual(len(my), 1)
         self.assertEqual(my[0]["name"], "Weight Loss")
-        self.assertEqual(my[0]["members"], ["alice"])
+        self.assertEqual(my[0]["members"], [{"username": "alice", "is_owner": True}])
+        self.assertEqual(my[0]["owner"], "alice")
+        self.assertTrue(my[0]["user_is_owner"])
 
-        ok, key = webapp.join_leaderboard("Weight Loss", "abc123", "bob")
+        ok, key = webapp.join_group("Weight Loss", "abc123", "bob")
         self.assertTrue(ok)
-        self.assertEqual(webapp.all_leaderboards()[0]["members"], ["alice", "bob"])
-        self.assertEqual(webapp.all_leaderboards()[0]["member_count"], 2)
+        self.assertEqual(key, "group_joined")
+        self.assertEqual(self.member_names(webapp.all_groups()[0]["id"]), ["alice", "bob"])
+        self.assertEqual(webapp.all_groups()[0]["member_count"], 2)
+        self.assertFalse(webapp.my_groups("bob")[0]["user_is_owner"])
 
     def test_wrong_code_or_name(self):
         self.add_user("alice")
-        webapp.create_leaderboard("Weight Loss", "abc123", "alice")
-        self.assertEqual(webapp.join_leaderboard("Weight Loss", "nope", "alice")[1],
+        webapp.create_group("Weight Loss", "abc123", "alice")
+        self.assertEqual(webapp.join_group("Weight Loss", "nope", "alice")[1],
                          "wrong_access_code")
-        self.assertEqual(webapp.join_leaderboard("Nope", "abc123", "alice")[1],
+        self.assertEqual(webapp.join_group("Nope", "abc123", "alice")[1],
                          "wrong_access_code")
 
     def test_create_without_member(self):
-        ok, key = webapp.create_leaderboard("Admin Board", "code1", None)
+        ok, key = webapp.create_group("Admin Group", "code1", None)
         self.assertTrue(ok)
-        self.assertEqual(key, "leaderboard_created")
-        board = webapp.all_leaderboards()[0]
-        self.assertEqual(board["name"], "Admin Board")
-        self.assertEqual(board["members"], [])
-        self.assertEqual(board["member_count"], 0)
+        self.assertEqual(key, "group_created")
+        group = webapp.all_groups()[0]
+        self.assertEqual(group["name"], "Admin Group")
+        self.assertEqual(group["owner"], webapp.ADMIN_USER)
+        self.assertEqual(group["members"], [])
+        self.assertEqual(group["member_count"], 0)
 
-    def test_delete_leaderboard(self):
+    def test_delete_group_only_by_owner_or_admin(self):
         self.add_user("alice")
-        webapp.create_leaderboard("A", "1", "alice")
-        webapp.join_leaderboard("A", "1", "alice")
-        lid = webapp.all_leaderboards()[0]["id"]
-        ok, key = webapp.delete_leaderboard(lid)
+        self.add_user("bob")
+        webapp.create_group("A", "1", "alice")
+        webapp.join_group("A", "1", "bob")
+        lid = webapp.all_groups()[0]["id"]
+        self.assertEqual(webapp.delete_group(lid, "bob")[1], "not_allowed")
+        ok, key = webapp.delete_group(lid, "alice")
         self.assertTrue(ok)
-        self.assertEqual(key, "leaderboard_removed")
-        self.assertEqual(webapp.all_leaderboards(), [])
+        self.assertEqual(key, "group_removed")
+        self.assertEqual(webapp.all_groups(), [])
+        # admin can delete a user-created group
+        webapp.create_group("A", "1", "alice")
+        self.assertEqual(webapp.delete_group(webapp.all_groups()[0]["id"], webapp.ADMIN_USER)[0], True)
 
     def test_delete_renumbers_ids_and_memberships(self):
         self.add_user("alice")
-        webapp.create_leaderboard("A", "1", "alice")
-        webapp.create_leaderboard("B", "2", None)
-        webapp.create_leaderboard("C", "3", None)
-        self.assertEqual([b["id"] for b in webapp.all_leaderboards()], [1, 2, 3])
-        webapp.delete_leaderboard(2)
-        boards = webapp.all_leaderboards()
-        self.assertEqual([b["id"] for b in boards], [1, 2])
-        self.assertEqual([b["name"] for b in boards], ["A", "C"])
-        self.assertEqual([b for b in boards if b["name"] == "A"][0]["members"], ["alice"])
-        webapp.create_leaderboard("D", "4", None)
-        self.assertEqual([b["id"] for b in webapp.all_leaderboards()], [1, 2, 3])
+        webapp.create_group("A", "1", "alice")
+        webapp.create_group("B", "2", None)
+        webapp.create_group("C", "3", None)
+        self.assertEqual([g["id"] for g in webapp.all_groups()], [1, 2, 3])
+        webapp.delete_group(2, webapp.ADMIN_USER)
+        groups = webapp.all_groups()
+        self.assertEqual([g["id"] for g in groups], [1, 2])
+        self.assertEqual([g["name"] for g in groups], ["A", "C"])
+        webapp.create_group("D", "4", None)
+        self.assertEqual([g["id"] for g in webapp.all_groups()], [1, 2, 3])
 
     def test_duplicate_name_and_already_member(self):
         self.add_user("alice")
         self.add_user("bob")
-        webapp.create_leaderboard("A", "1", "alice")
-        self.assertEqual(webapp.create_leaderboard("A", "2", "bob")[0], False)
-        self.assertEqual(webapp.join_leaderboard("A", "1", "alice")[1], "already_member")
+        webapp.create_group("A", "1", "alice")
+        self.assertEqual(webapp.create_group("A", "2", "bob")[0], False)
+        self.assertEqual(webapp.join_group("A", "1", "alice")[1], "already_member")
 
-    def test_leave_leaderboard_recomputes_ranks(self):
+    def test_leave_group_recomputes_ranks(self):
         self.add_user("alice")
         self.add_user("bob")
-        webapp.create_leaderboard("A", "1", "alice")
-        webapp.join_leaderboard("A", "1", "bob")
+        webapp.create_group("A", "1", "alice")
+        webapp.join_group("A", "1", "bob")
         today = date.today()
         entry = {"name": "Salad", "meal": "lunch", "calories": 100, "amount": None, "extras": {}}
         data = webapp.load_user_data("bob")
         data["days"][today.isoformat()] = [entry]
         webapp.save_user_data("bob", data)
 
-        board = webapp.all_leaderboards()[0]
-        self.assertEqual([r[0] for r in webapp.rank_users(board["members"])], ["bob", "alice"])
-        ok, key = webapp.leave_leaderboard(board["id"], "bob")
+        group = webapp.all_groups()[0]
+        names = self.member_names(group["id"])
+        self.assertEqual([r[0] for r in webapp.rank_users(names)], ["bob", "alice"])
+        ok, key = webapp.leave_group(group["id"], "bob")
         self.assertTrue(ok)
-        self.assertEqual(key, "leaderboard_left")
-        board = webapp.all_leaderboards()[0]
-        self.assertEqual(board["members"], ["alice"])
-        self.assertEqual([r[0] for r in webapp.rank_users(board["members"])], ["alice"])
-        self.assertEqual(webapp.my_leaderboards("bob"), [])
-        self.assertEqual(webapp.my_leaderboards("alice")[0]["name"], "A")
+        self.assertEqual(key, "group_left")
+        group = webapp.all_groups()[0]
+        self.assertEqual(self.member_names(group["id"]), ["alice"])
+        self.assertEqual([r[0] for r in webapp.rank_users(self.member_names(group["id"]))], ["alice"])
+        self.assertEqual(webapp.my_groups("bob"), [])
 
-    def test_kick_member(self):
+    def test_kick_requires_owner(self):
         self.add_user("alice")
         self.add_user("bob")
-        webapp.create_leaderboard("A", "1", "alice")
-        webapp.join_leaderboard("A", "1", "bob")
-        ok, key = webapp.kick_member(webapp.all_leaderboards()[0]["id"], "bob")
+        self.add_user("carol")
+        webapp.create_group("A", "1", "alice")
+        webapp.join_group("A", "1", "bob")
+        webapp.join_group("A", "1", "carol")
+        lid = webapp.all_groups()[0]["id"]
+        self.assertEqual(webapp.kick_member(lid, "carol", "bob")[1], "not_allowed")
+        ok, key = webapp.kick_member(lid, "carol", "alice")
         self.assertTrue(ok)
         self.assertEqual(key, "member_kicked")
-        self.assertEqual(webapp.all_leaderboards()[0]["members"], ["alice"])
-        self.assertEqual(webapp.my_leaderboards("bob"), [])
+        self.assertEqual(self.member_names(lid), ["alice", "bob"])
+        self.assertEqual(webapp.my_groups("carol"), [])
 
-    def test_rename_and_change_code(self):
+    def test_promote_and_demote_owner(self):
         self.add_user("alice")
-        ok, _ = webapp.create_leaderboard("A", "1", "alice")
+        self.add_user("bob")
+        webapp.create_group("A", "1", "alice")
+        webapp.join_group("A", "1", "bob")
+        lid = webapp.all_groups()[0]["id"]
+
+        self.assertEqual(webapp.promote_owner(lid, "bob", "bob")[1], "not_allowed")
+        ok, key = webapp.promote_owner(lid, "bob", "alice")
         self.assertTrue(ok)
-        lid = webapp.all_leaderboards()[0]["id"]
-        webapp.rename_leaderboard(lid, "B")
-        webapp.change_access_code(lid, "2")
-        board = webapp.all_leaderboards()[0]
-        self.assertEqual(board["name"], "B")
-        self.assertEqual(board["access_code"], "2")
+        self.assertEqual(key, "owner_promoted")
+        self.assertTrue(webapp.is_group_owner(lid, "bob"))
+        self.assertTrue(webapp.my_groups("bob")[0]["user_is_owner"])
+
+        self.assertEqual(webapp.demote_owner(lid, "alice", "alice")[1], "not_allowed")
+        ok, key = webapp.demote_owner(lid, "bob", "alice")
+        self.assertTrue(ok)
+        self.assertEqual(key, "owner_demoted")
+        self.assertFalse(webapp.is_group_owner(lid, "bob"))
+        self.assertFalse(webapp.my_groups("bob")[0]["user_is_owner"])
+
+        self.assertEqual(webapp.promote_owner(lid, "ghost", "alice")[1], "not_a_member")
+        self.assertEqual(webapp.demote_owner(lid, "bob", "alice")[1], "not_a_member")
+
+    def test_owner_can_manage_group(self):
+        self.add_user("alice")
+        self.add_user("bob")
+        webapp.create_group("A", "1", "alice")
+        webapp.join_group("A", "1", "bob")
+        lid = webapp.all_groups()[0]["id"]
+        # non-owner cannot rename / change code
+        self.assertEqual(webapp.rename_group(lid, "B", "bob")[1], "not_allowed")
+        self.assertEqual(webapp.change_access_code(lid, "9", "bob")[1], "not_allowed")
+        # owner can
+        ok, key = webapp.rename_group(lid, "B", "alice")
+        self.assertTrue(ok)
+        self.assertEqual(key, "group_renamed")
+        ok, key = webapp.change_access_code(lid, "9", "alice")
+        self.assertTrue(ok)
+        self.assertEqual(key, "code_changed")
+        group = webapp.all_groups()[0]
+        self.assertEqual(group["name"], "B")
+        self.assertEqual(group["access_code"], "9")
+        # duplicate name rejected
+        webapp.create_group("New", "3", "alice")
+        self.assertEqual(webapp.rename_group(webapp.all_groups()[0]["id"], "New", "alice")[0], False)
+        # empty code rejected
+        self.assertEqual(webapp.change_access_code(lid, "   ", "alice")[1], "code_empty")
+
+    def test_admin_manages_only_own_groups_members(self):
+        self.add_user("alice")
+        self.add_user("bob")
+        webapp.create_group("User Group", "1", "alice")
+        webapp.join_group("User Group", "1", "bob")
+        user_group = webapp.all_groups()[0]
+        self.assertEqual(user_group["owner"], "alice")
+        self.assertTrue(any(m["username"] == "bob" and not m["is_owner"] for m in user_group["members"]))
+        # admin cannot kick in a user-created group
+        self.assertEqual(webapp.kick_member(user_group["id"], "bob", webapp.ADMIN_USER)[1], "not_allowed")
+        # admin creates a group -> can kick there
+        webapp.create_group("Admin Group", "2", None)
+        admin_group = [g for g in webapp.all_groups() if g["name"] == "Admin Group"][0]
+        webapp.join_group("Admin Group", "2", "bob")
+        ok, key = webapp.kick_member(admin_group["id"], "bob", webapp.ADMIN_USER)
+        self.assertTrue(ok)
+        self.assertEqual(key, "member_kicked")
 
     def test_rename_user(self):
         self.add_user("alice")
         self.add_user("bob")
-        webapp.create_leaderboard("A", "1", "alice")
-        webapp.join_leaderboard("A", "1", "bob")
+        webapp.create_group("A", "1", "alice")
+        webapp.join_group("A", "1", "bob")
 
         ok, key = webapp.rename_user("alice", "alice2")
         self.assertTrue(ok)
         self.assertEqual(key, "username_changed")
         self.assertIn("alice2", webapp.all_usernames())
         self.assertNotIn("alice", webapp.all_usernames())
-        members = webapp.all_leaderboards()[0]["members"]
-        self.assertIn("alice2", members)
-        self.assertIn("bob", members)
+        group = webapp.all_groups()[0]
+        self.assertIn("alice2", self.member_names(group["id"]))
+        self.assertIn("bob", self.member_names(group["id"]))
+        self.assertEqual(group["owner"], "alice2")
 
         self.assertEqual(webapp.rename_user("ghost", "x")[1], "user_not_found")
         self.assertEqual(webapp.rename_user("alice2", "bob")[1], "username_exists")
@@ -522,8 +596,8 @@ class TestLeaderboards(unittest.TestCase):
 
 
 class TestAdminRestrictions(unittest.TestCase):
-    """Admin sees users + leaderboard settings only: no diet/budget add,
-    no leaderboard create/join forms."""
+    """Admin sees account management + their own groups only: no diet/budget
+    data, no user group forms, no joining, no member records."""
 
     DB = os.path.join(os.path.dirname(os.path.abspath(webapp.__file__)), "streamlit_data.db")
 
@@ -560,39 +634,50 @@ class TestAdminRestrictions(unittest.TestCase):
         for b in self.at.button:
             self.assertNotEqual(b.label.strip().lower(), "add")
 
-    def test_admin_has_no_leaderboard_forms(self):
+    def test_admin_has_no_user_group_forms(self):
         keys = {t.key for t in self.at.text_input}
-        self.assertFalse(keys & {"lb_name", "lb_code", "jb_name", "jb_code"})
+        self.assertFalse(keys & {"grp_name", "grp_code", "jg_name", "jg_code"})
 
     def test_admin_has_admin_panels(self):
         labels = [e.label for e in self.at.expander]
         self.assertTrue(any("Admin panel" in l for l in labels))
-        self.assertTrue(any("Leaderboards" in l for l in labels))
+        self.assertTrue(any("Groups" in l for l in labels))
 
-    def test_admin_can_manage_but_not_join(self):
-        webapp.create_leaderboard("Board", "x1", None)
+    def test_admin_can_create_manage_but_not_join(self):
         self.at.run(timeout=60)
         keys = {t.key for t in self.at.text_input}
-        self.assertTrue({"alb_name", "alb_code"} <= keys)
-        self.assertTrue(any("Remove leaderboard" in b.label for b in self.at.button))
-        self.assertFalse(keys & {"lb_name", "lb_code", "jb_name", "jb_code"})
+        self.assertTrue({"ag_name", "ag_code"} <= keys)
+        self.assertTrue(any("Create group" in b.label for b in self.at.button))
+        self.assertFalse(keys & {"grp_name", "grp_code", "jg_name", "jg_code"})
 
-    def test_admin_can_kick_member(self):
+    def test_admin_can_kick_member_of_own_group(self):
         salt = os.urandom(16).hex()
         with webapp.get_db() as conn:
             conn.execute("INSERT INTO users (username, salt, hash) VALUES (?,?,?)",
                          ("bob", salt, webapp.hash_password("pw", salt)))
-        webapp.create_leaderboard("Team", "x", "bob")
+        webapp.create_group("Team", "x", None)
+        webapp.join_group("Team", "x", "bob")
         self.at.run(timeout=60)
-        kick_sel = [s for s in self.at.selectbox if s.key == "adm_kick_sel_1"][0]
+        kick_sel = [s for s in self.at.selectbox if s.key == "adm_gkick_sel_1"][0]
         self.assertEqual(kick_sel.options, ["bob"])
         kick_sel.set_value("bob")
-        [b for b in self.at.button if b.key == "adm_kick_btn_1"][0].click()
+        [b for b in self.at.button if b.key == "adm_gkick_btn_1"][0].click()
         self.at.run(timeout=60)
-        self.assertTrue(any("Remove bob from this leaderboard" in w.value for w in self.at.warning))
-        [b for b in self.at.button if b.key == "adm_kick_yes_1"][0].click()
+        self.assertTrue(any("Remove bob from this group" in w.value for w in self.at.warning))
+        [b for b in self.at.button if b.key == "adm_gkick_yes_1"][0].click()
         self.at.run(timeout=60)
-        self.assertEqual(webapp.all_leaderboards()[0]["members"], [])
+        self.assertEqual(webapp.all_groups()[0]["members"], [])
+
+    def test_admin_cannot_kick_in_user_group(self):
+        salt = os.urandom(16).hex()
+        with webapp.get_db() as conn:
+            conn.execute("INSERT INTO users (username, salt, hash) VALUES (?,?,?)",
+                         ("bob", salt, webapp.hash_password("pw", salt)))
+        webapp.create_group("Team", "x", "bob")
+        self.at.run(timeout=60)
+        self.assertEqual([s for s in self.at.selectbox if s.key == "adm_gkick_sel_1"], [])
+        self.assertTrue(any("—" in m.value for m in self.at.markdown))
+        self.assertTrue(any("Remove group" in b.label for b in self.at.button))
 
     def test_normal_user_still_has_everything(self):
         salt = os.urandom(16).hex()
@@ -604,13 +689,301 @@ class TestAdminRestrictions(unittest.TestCase):
         self.assertIn("Diet", tab_labels)
         self.assertIn("Budget", tab_labels)
         keys = {t.key for t in at.text_input}
-        self.assertTrue(keys & {"lb_name", "lb_code", "jb_name", "jb_code"})
+        self.assertTrue({"grp_name", "grp_code"} <= keys)
         self.assertTrue(any("Add item" in b.label for b in at.button))
         self.assertFalse(any("Admin panel" in e.label for e in at.expander))
 
 
-class TestUserLeaderboardUI(unittest.TestCase):
-    """User leaderboards are a dropdown listing joined boards + Add/Join actions."""
+class TestGroupUI(unittest.TestCase):
+    """User groups: dropdown options, add/join forms, owner management, leave."""
+
+    DB = os.path.join(os.path.dirname(os.path.abspath(webapp.__file__)), "streamlit_data.db")
+
+    def setUp(self):
+        webapp.DB_PATH = self.DB
+        if os.path.exists(self.DB):
+            os.remove(self.DB)
+        webapp.init_db()
+        webapp.ensure_admin()
+        self.add_user("bob")
+        self.add_user("alice")
+        self.at = AppTest.from_file(APP_PATH)
+        self.at.run(timeout=60)
+        self.at.session_state["user"] = "bob"
+        self.at.session_state["data"] = webapp.default_data()
+        self.at.run(timeout=60)
+
+    def tearDown(self):
+        if os.path.exists(self.DB):
+            os.remove(self.DB)
+
+    def add_user(self, name):
+        salt = os.urandom(16).hex()
+        with webapp.get_db() as conn:
+            conn.execute("INSERT INTO users (username, salt, hash) VALUES (?,?,?)",
+                         (name, salt, webapp.hash_password("pw", salt)))
+
+    def select_group(self, label_fragment):
+        dd = [s for s in self.at.selectbox if s.key == "grp_dd"][0]
+        opt = [o for o in dd.options if label_fragment in o][0]
+        dd.set_value(opt)
+        self.at.run(timeout=60)
+
+    def test_dropdown_contains_add_join_and_joined_groups(self):
+        webapp.create_group("Team A", "x", "bob")
+        self.at.run(timeout=60)
+        dd = [s for s in self.at.selectbox if s.key == "grp_dd"][0]
+        self.assertTrue(any(o.startswith("➕") and "Add" in o for o in dd.options))
+        self.assertTrue(any(o.startswith("➕") and "Join" in o for o in dd.options))
+        self.assertTrue(any("Team A" in o for o in dd.options))
+
+    def test_default_is_add_form_when_no_groups(self):
+        dd = [s for s in self.at.selectbox if s.key == "grp_dd"][0]
+        self.assertEqual(dd.index, 0)
+        keys = {t.key for t in self.at.text_input}
+        self.assertIn("grp_name", keys)
+
+    def test_join_action_shows_join_form(self):
+        webapp.create_group("Team A", "x", None)
+        self.at.run(timeout=60)
+        dd = [s for s in self.at.selectbox if s.key == "grp_dd"][0]
+        join_opt = [o for o in dd.options if "Join" in o][0]
+        dd.set_value(join_opt)
+        self.at.run(timeout=60)
+        keys = {t.key for t in self.at.text_input}
+        self.assertIn("jg_name", keys)
+        self.assertIn("jg_code", keys)
+
+    def test_selecting_group_shows_rank_table(self):
+        webapp.create_group("Team A", "x", "bob")
+        self.at.run(timeout=60)
+        self.select_group("Team A")
+        self.assertGreaterEqual(len(self.at.table), 1)
+        self.assertIn("bob", str(self.at.table[0].value))
+
+    def test_owner_sees_management_and_member_records(self):
+        webapp.create_group("Team A", "x", "bob")
+        webapp.join_group("Team A", "x", "alice")
+        self.at.run(timeout=60)
+        self.select_group("Team A")
+        keys = {b.key for b in self.at.button}
+        self.assertIn("g_promote_1_alice", keys)
+        self.assertIn("g_kick_1_alice", keys)
+        self.assertIn("g_del_btn_1", keys)
+        sel = [s for s in self.at.selectbox if s.key == "grp_rec_sel_1"][0]
+        self.assertEqual(sel.options, ["alice", "bob"])
+        self.assertNotIn("g_leave_1", keys)
+
+    def test_owner_promote_and_demote(self):
+        webapp.create_group("Team A", "x", "bob")
+        webapp.join_group("Team A", "x", "alice")
+        self.at.run(timeout=60)
+        self.select_group("Team A")
+        [b for b in self.at.button if b.key == "g_promote_1_alice"][0].click()
+        self.at.run(timeout=60)
+        self.assertTrue(webapp.is_group_owner(1, "alice"))
+        [b for b in self.at.button if b.key == "g_demote_1_alice"][0].click()
+        self.at.run(timeout=60)
+        self.assertFalse(webapp.is_group_owner(1, "alice"))
+
+    def test_owner_kick_flow(self):
+        webapp.create_group("Team A", "x", "bob")
+        webapp.join_group("Team A", "x", "alice")
+        self.at.run(timeout=60)
+        self.select_group("Team A")
+        [b for b in self.at.button if b.key == "g_kick_1_alice"][0].click()
+        self.at.run(timeout=60)
+        self.assertTrue(any("Remove alice from this group" in w.value for w in self.at.warning))
+        [b for b in self.at.button if b.key == "g_kick_yes_1_alice"][0].click()
+        self.at.run(timeout=60)
+        self.assertEqual(webapp.my_groups("alice"), [])
+        self.assertEqual(len(webapp.my_groups("bob")[0]["members"]), 1)
+
+    def test_non_owner_only_leaves(self):
+        webapp.create_group("Team A", "x", "alice")
+        webapp.join_group("Team A", "x", "bob")
+        self.at.run(timeout=60)
+        self.select_group("Team A")
+        keys = {b.key for b in self.at.button}
+        self.assertIn("g_leave_1", keys)
+        self.assertNotIn("g_promote_1_alice", keys)
+        self.assertNotIn("g_del_btn_1", keys)
+
+    def test_leave_group_flow(self):
+        webapp.create_group("Team A", "x", "alice")
+        webapp.join_group("Team A", "x", "bob")
+        self.at.run(timeout=60)
+        self.select_group("Team A")
+        [b for b in self.at.button if b.key == "g_leave_1"][0].click()
+        self.at.run(timeout=60)
+        self.assertTrue(any("Leave this group" in w.value for w in self.at.warning))
+        [b for b in self.at.button if b.key == "g_leave_yes_1"][0].click()
+        self.at.run(timeout=60)
+        self.assertEqual(webapp.my_groups("bob"), [])
+        dd = [s for s in self.at.selectbox if s.key == "grp_dd"][0]
+        self.assertFalse(any("Team A" in o for o in dd.options))
+        self.assertEqual(dd.index, 0)
+
+
+def diet_entry(calories=100, name="Salad"):
+    return {"name": name, "meal": "lunch", "calories": calories, "amount": None, "extras": {}}
+
+
+def spend_entry(price=50):
+    return {"name": "lunch", "category": "Food", "price": price}
+
+
+class TestStorageLimit(unittest.TestCase):
+    """Only 30 days of diet/budget data may be stored; new days are blocked
+    until old data is removed."""
+
+    def test_count_and_full(self):
+        data = webapp.default_data()
+        start = date(2026, 5, 1)
+        for i in range(webapp.MAX_DAYS - 1):
+            data["days"][(start + timedelta(days=i)).isoformat()] = [diet_entry()]
+        self.assertEqual(webapp.stored_day_count(data), webapp.MAX_DAYS - 1)
+        self.assertFalse(webapp.storage_full(data))
+        data["spends"][(start + timedelta(days=webapp.MAX_DAYS - 1)).isoformat()] = [spend_entry()]
+        self.assertEqual(webapp.stored_day_count(data), webapp.MAX_DAYS)
+        self.assertTrue(webapp.storage_full(data))
+
+    def test_blocker_only_covers_new_days(self):
+        data = webapp.default_data()
+        for i in range(30):
+            data["days"][(date(2026, 5, 1) + timedelta(days=i)).isoformat()] = [diet_entry()]
+        self.assertFalse(webapp.storage_blocker(data, date(2026, 5, 1)))
+        self.assertTrue(webapp.storage_blocker(data, date(2026, 6, 1)))
+        self.assertFalse(webapp.storage_blocker(data, date(2026, 5, 15)))
+
+    def test_drop_oldest_day_removes_data(self):
+        data = webapp.default_data()
+        for i in range(5):
+            d = date(2026, 5, 1) + timedelta(days=i)
+            data["days"][d.isoformat()] = [diet_entry()]
+            data["spends"][d.isoformat()] = [spend_entry()]
+        iso = date(2026, 5, 1).isoformat()
+        self.assertTrue(webapp.drop_oldest_day(data))
+        self.assertEqual(webapp.stored_day_count(data), 4)
+        self.assertNotIn(iso, data["days"])
+        self.assertNotIn(iso, data["spends"])
+        self.assertIn("streak_carry", data)
+        self.assertIn("budget_carry", data)
+        self.assertFalse(webapp.drop_oldest_day(webapp.default_data()))
+
+
+class TestStreakCarry(unittest.TestCase):
+    """Deleting old days must bank streaks so they keep building seamlessly."""
+
+    START = date(2026, 5, 4)  # a Monday, so completed weeks align cleanly
+
+    def build(self, days, over_days=(), calories=100):
+        data = webapp.default_data()
+        for i in range(days):
+            c = 10_000 if i in over_days else calories
+            data["days"][(self.START + timedelta(days=i)).isoformat()] = [diet_entry(c)]
+        return data
+
+    def stream(self, data, steps):
+        """Log `steps` more days, dropping the oldest each day (as the storage
+        cap would)."""
+        ref = date.fromisoformat(max(data["days"]))
+        for _ in range(steps):
+            ref += timedelta(days=1)
+            webapp.drop_oldest_day(data)
+            data["days"][ref.isoformat()] = [diet_entry()]
+        return ref
+
+    def test_day_streak_builds_seamlessly(self):
+        data = self.build(30)
+        ref = self.START + timedelta(days=29)
+        self.assertEqual(webapp.streaks_with_carry(data, ref)[0], 30)
+        ref = self.stream(data, 40)
+        self.assertEqual(webapp.stored_day_count(data), 30)
+        self.assertEqual(webapp.streaks_with_carry(data, ref)[0], 70)
+
+    def test_week_streak_builds_seamlessly(self):
+        data = self.build(30)
+        ref = self.START + timedelta(days=29)  # a Tuesday
+        while ref.weekday() != 6:  # advance to a fully-logged Sunday
+            ref = self.stream(data, 1)
+        week = webapp.streaks_with_carry(data, ref)[1]
+        self.assertGreaterEqual(week, 4)
+        ref = self.stream(data, 4 * 7)
+        self.assertEqual(webapp.streaks_with_carry(data, ref)[1], week + 4)
+
+    def test_month_streak_builds_seamlessly(self):
+        data = webapp.default_data()
+        start = date(2025, 6, 1)
+        end = date(2026, 3, 31)
+        d = start
+        while d <= end:
+            data["days"][d.isoformat()] = [diet_entry()]
+            if webapp.stored_day_count(data) > webapp.MAX_DAYS:
+                webapp.drop_oldest_day(data)
+            d += timedelta(days=1)
+        self.assertEqual(webapp.streaks_with_carry(data, end)[2], 10)
+
+    def test_missing_day_breaks_streak(self):
+        data = self.build(40)
+        last = date.fromisoformat(max(data["days"]))
+        skip = last + timedelta(days=1)  # never logged
+        ref = last + timedelta(days=2)
+        webapp.drop_oldest_day(data)
+        webapp.drop_oldest_day(data)
+        webapp.drop_oldest_day(data)
+        data["days"][ref.isoformat()] = [diet_entry()]
+        self.assertNotIn(skip.isoformat(), data["days"])
+        self.assertEqual(webapp.streaks_with_carry(data, ref)[0], 1)
+
+    def test_over_limit_dropped_day_breaks_streak(self):
+        data = self.build(60, over_days=(30,))
+        ref = self.stream(data, 35)
+        # days past the last over-limit day (offset 31..59) + the 35 streamed
+        self.assertEqual(webapp.streaks_with_carry(data, ref)[0], 29 + 35)
+
+    def test_compute_streaks_carry_needs_unbroken_run(self):
+        data = self.build(30)
+        days = webapp.build_all_days(data)
+        cats = webapp.diet_categories(data)
+        ref = max(days)
+        self.assertEqual(core.compute_streaks(days, cats, ref, {"day": 10})[0], 40)
+        mid = ref - timedelta(days=3)
+        data["days"].pop(mid.isoformat())
+        days2 = webapp.build_all_days(data)
+        self.assertEqual(core.compute_streaks(days2, cats, ref, {"day": 10})[0], 3)
+
+    def test_budget_day_streak_builds_seamlessly(self):
+        data = webapp.default_data()
+        data["budget_period"] = "day"
+        data["budget_limit"] = 1000
+        for i in range(30):
+            data["spends"][(self.START + timedelta(days=i)).isoformat()] = [spend_entry()]
+        ref = self.START + timedelta(days=29)
+        self.assertEqual(webapp.budget_streaks_with_carry(data, ref)["day"], 30)
+        for _ in range(20):
+            ref += timedelta(days=1)
+            webapp.drop_oldest_day(data)
+            data["spends"][ref.isoformat()] = [spend_entry()]
+        self.assertEqual(webapp.budget_streaks_with_carry(data, ref)["day"], 50)
+
+    def test_budget_gap_breaks_streak(self):
+        data = webapp.default_data()
+        data["budget_period"] = "day"
+        data["budget_limit"] = 1000
+        for i in range(30):
+            data["spends"][(self.START + timedelta(days=i)).isoformat()] = [spend_entry()]
+        ref = self.START + timedelta(days=29) + timedelta(days=1)
+        webapp.drop_oldest_day(data)
+        webapp.drop_oldest_day(data)
+        ref = ref + timedelta(days=1)  # one empty day
+        data["spends"][ref.isoformat()] = [spend_entry()]
+        self.assertEqual(webapp.budget_streaks_with_carry(data, ref)["day"], 1)
+
+
+class TestStorageUI(unittest.TestCase):
+    """The 30-day cap shows a prompt and lets the user free a slot by deleting
+    the oldest day, without losing their streak."""
 
     DB = os.path.join(os.path.dirname(os.path.abspath(webapp.__file__)), "streamlit_data.db")
 
@@ -624,75 +997,62 @@ class TestUserLeaderboardUI(unittest.TestCase):
         with webapp.get_db() as conn:
             conn.execute("INSERT INTO users (username, salt, hash) VALUES (?,?,?)",
                          ("bob", salt, webapp.hash_password("pw", salt)))
-        self.at = AppTest.from_file(APP_PATH)
-        self.at.run(timeout=60)
-        self.at.session_state["user"] = "bob"
-        self.at.session_state["data"] = webapp.default_data()
-        self.at.run(timeout=60)
 
     def tearDown(self):
         if os.path.exists(self.DB):
             os.remove(self.DB)
 
-    def test_dropdown_contains_add_join_and_joined_boards(self):
-        webapp.create_leaderboard("Team A", "x", "bob")
-        self.at.run(timeout=60)
-        dd = [s for s in self.at.selectbox if s.key == "lb_dd"][0]
-        self.assertTrue(any(o.startswith("➕") and "Add" in o for o in dd.options))
-        self.assertTrue(any(o.startswith("➕") and "Join" in o for o in dd.options))
-        self.assertTrue(any("Team A" in o for o in dd.options))
+    def boot(self, data):
+        webapp.save_user_data("bob", data)
+        at = AppTest.from_file(APP_PATH)
+        at.run(timeout=60)
+        at.session_state["user"] = "bob"
+        at.session_state["data"] = webapp.load_user_data("bob")
+        at.run(timeout=60)
+        return at
 
-    def test_default_is_add_form_when_no_boards(self):
-        dd = [s for s in self.at.selectbox if s.key == "lb_dd"][0]
-        self.assertEqual(dd.index, 0)
-        keys = {t.key for t in self.at.text_input}
-        self.assertIn("lb_name", keys)
+    def test_new_day_blocked_until_old_day_deleted(self):
+        data = webapp.default_data()
+        today = date.today()
+        for i in range(1, webapp.MAX_DAYS + 1):
+            data["days"][(today - timedelta(days=i)).isoformat()] = [diet_entry()]
+        at = self.boot(data)
+        add_btn = [b for b in at.button if b.key == f"diet_go_add_{today.isoformat()}"][0]
+        add_btn.click()
+        at.run(timeout=60)
+        self.assertTrue(any("Storage full" in w.value for w in at.warning))
+        self.assertFalse(any(k.startswith("fd_") for k in {t.key for t in at.text_input if t.key}))
+        self.assertTrue(any("Delete oldest day" in b.label for b in at.button))
+        at.number_input(key="st_del_n").set_value(1)
+        [b for b in at.button if b.key == "st_del_btn"][0].click()
+        at.run(timeout=60)
+        [b for b in at.button if b.key == "st_del_yes"][0].click()
+        at.run(timeout=60)
+        data2 = webapp.load_user_data("bob")
+        self.assertEqual(webapp.stored_day_count(data2), webapp.MAX_DAYS - 1)
+        self.assertTrue(any(k.startswith("fd_") for k in {t.key for t in at.text_input if t.key}))
+        self.assertGreaterEqual(webapp.streaks_with_carry(data2, today - timedelta(days=1))[0],
+                                webapp.MAX_DAYS - 1)
 
-    def test_join_action_shows_join_form(self):
-        webapp.create_leaderboard("Team A", "x", None)
-        self.at.run(timeout=60)
-        dd = [s for s in self.at.selectbox if s.key == "lb_dd"][0]
-        join_opt = [o for o in dd.options if "Join" in o][0]
-        dd.set_value(join_opt)
-        self.at.run(timeout=60)
-        keys = {t.key for t in self.at.text_input}
-        self.assertIn("jb_name", keys)
-        self.assertIn("jb_code", keys)
-
-    def test_selecting_joined_board_shows_rank_table(self):
-        webapp.create_leaderboard("Team A", "x", "bob")
-        self.at.run(timeout=60)
-        dd = [s for s in self.at.selectbox if s.key == "lb_dd"][0]
-        team_opt = [o for o in dd.options if "Team A" in o][0]
-        dd.set_value(team_opt)
-        self.at.run(timeout=60)
-        self.assertGreaterEqual(len(self.at.table), 1)
-        self.assertIn("bob", str(self.at.table[0].value))
-
-    def test_leave_leaderboard_flow(self):
-        webapp.create_leaderboard("Team A", "x", "bob")
-        self.at.run(timeout=60)
-        dd = [s for s in self.at.selectbox if s.key == "lb_dd"][0]
-        team_opt = [o for o in dd.options if "Team A" in o][0]
-        dd.set_value(team_opt)
-        self.at.run(timeout=60)
-        self.assertTrue(any("Leave leaderboard" in b.label for b in self.at.button))
-        [b for b in self.at.button if b.key == "lb_leave_1"][0].click()
-        self.at.run(timeout=60)
-        self.assertTrue(any("Leave this leaderboard" in w.value for w in self.at.warning))
-        [b for b in self.at.button if b.key == "lb_leave_yes_1"][0].click()
-        self.at.run(timeout=60)
-        self.assertEqual(webapp.my_leaderboards("bob"), [])
-        dd = [s for s in self.at.selectbox if s.key == "lb_dd"][0]
-        self.assertFalse(any("Team A" in o for o in dd.options))
-        self.assertEqual(dd.index, 0)
+    def test_existing_day_still_editable_when_full(self):
+        data = webapp.default_data()
+        today = date.today()
+        for i in range(webapp.MAX_DAYS):
+            data["days"][(today - timedelta(days=i)).isoformat()] = [diet_entry()]
+        at = self.boot(data)
+        add_btn = [b for b in at.button if b.key == f"diet_go_add_{today.isoformat()}"][0]
+        add_btn.click()
+        at.run(timeout=60)
+        self.assertFalse(any("Storage full" in w.value for w in at.warning))
+        self.assertTrue(any(k.startswith("fd_") for k in {t.key for t in at.text_input if t.key}))
 
 
 class TestTranslationCoverage(unittest.TestCase):
     """Every tr(...) key used in app.py must exist in both languages."""
 
     def test_all_tr_keys_covered_in_both_langs(self):
-        src = open(APP_PATH, encoding="utf-8").read()
+        with open(APP_PATH, encoding="utf-8") as f:
+            src = f.read()
         keys = set(re.findall(r'tr\(["\']([^"\']+)["\']\)', src))
         self.assertTrue(keys)
         missing_en = {k for k in keys if k not in core.STRINGS["en"]}
