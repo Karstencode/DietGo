@@ -31,20 +31,28 @@ interfaces: **English** and **繁體中文 (Traditional Chinese)**.
 
   Score = `day_streak + week_streak × 7 + month_streak × 30`.
 
-- 🏆 **Groups**: any user can **create** or **join** a private group
-  (by name + access code). Every member is automatically on the group ranking,
+- 🏆 **Groups**: any user can **create** or **join** a group. Groups are either
+  **private** (join by name + access code) or **public** (join by name only).
+  Every member is automatically on the group ranking,
   ordered top‑to‑bottom by their combined diet score
   (`Score = day_streak + week_streak × 7 + month_streak × 30`).
-  - The **owner** (creator) can rename the group, change its access code,
-    remove it, **promote** members to co‑owners (same rights) or **demote**
-    owners, **kick** members, and view any member's diet/budget records.
-    Owners cannot add users — people join themselves via the access code.
+- The **owner** (creator) can rename the group, change its access code
+  (private groups only), remove it, **promote** members to co‑owners (same
+  rights) or **demote** owners, **kick** members, and view any member's
+  records — but only the
+  parts the member agreed to share.
+  - When joining a group you choose what the owner may see: **diet**,
+    **budget**, or **both** (changeable any time under *Sharing*). Owner-side
+    views respect that choice — diet/budget the member didn't share show
+    *Permission not granted* — and always present the member's items in the
+    same tables the owner uses, including the member's category amounts and
+    their diet/budget limits.
   - Non‑owners can **leave** a group any time.
 - 🟢 Calendar day colouring: green = within limits, red = over, grey = no data.
 - 👤 Per-user accounts with salted password hashes (web version).
 - 📱 Mobile-friendly web UI: the diet/budget day panels switch between a big
   **Add** button (entry form) and a **Display/Edit** button (list + edit/remove).
-- 🗃️ The web app keeps at most **30 days** of diet/budget data per user. When
+- 🗃️ The web app keeps at most **60 days** of diet/budget data per user. When
   storage is full, adding a brand‑new day prompts you to delete the oldest
   stored day(s) first. Day / week / month streaks are **preserved across
   deletions** and keep building seamlessly, so trimming old data never breaks a
@@ -78,10 +86,12 @@ A reserved **`admin`** account is created automatically on first run. Only
 - delete accounts
 - add accounts
 - rename any username (group memberships and ownership follow)
-- create, rename, or remove any **group**, and change its access code
-  (admin never joins a group — they only manage them). Admin sees a group's
-  member list, and can kick members, **only for the groups the admin
-  created**; for all other groups the member list is hidden.
+- create, rename, or remove groups the admin created (admin-created groups are
+  **public** and always created by name only, with no access code, and never
+  joined by the admin). Admin sees a public group's
+  member list and can kick members; **private (user-created) groups are never
+  shown to or managed by the admin** — their membership and member records stay
+  completely private.
 
 Set the admin password via the `ADMIN_PASSWORD` environment variable or in
 `.streamlit/secrets.toml` (`admin_password`). Otherwise it defaults to

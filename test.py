@@ -378,7 +378,7 @@ class TestGroups(unittest.TestCase):
         my = webapp.my_groups("alice")
         self.assertEqual(len(my), 1)
         self.assertEqual(my[0]["name"], "Weight Loss")
-        self.assertEqual(my[0]["members"], [{"username": "alice", "is_owner": True}])
+        self.assertEqual(my[0]["members"], [{"username": "alice", "is_owner": True, "share": "both"}])
         self.assertEqual(my[0]["owner"], "alice")
         self.assertTrue(my[0]["user_is_owner"])
 
@@ -406,6 +406,7 @@ class TestGroups(unittest.TestCase):
         self.assertEqual(group["owner"], webapp.ADMIN_USER)
         self.assertEqual(group["members"], [])
         self.assertEqual(group["member_count"], 0)
+        self.assertTrue(group["is_public"])  # admin-created groups are public
 
     def test_delete_group_only_by_owner_or_admin(self):
         self.add_user("alice")
@@ -418,9 +419,15 @@ class TestGroups(unittest.TestCase):
         self.assertTrue(ok)
         self.assertEqual(key, "group_removed")
         self.assertEqual(webapp.all_groups(), [])
-        # admin can delete a user-created group
+        # admin cannot delete a private (user-created) group
         webapp.create_group("A", "1", "alice")
-        self.assertEqual(webapp.delete_group(webapp.all_groups()[0]["id"], webapp.ADMIN_USER)[0], True)
+        self.assertEqual(
+            webapp.delete_group(webapp.all_groups()[0]["id"], webapp.ADMIN_USER)[0], False
+        )
+        # admin can delete its own public group
+        webapp.create_group("Admin A", "ignored", None)
+        admin_lid = [g for g in webapp.all_groups() if g["name"] == "Admin A"][0]["id"]
+        self.assertEqual(webapp.delete_group(admin_lid, webapp.ADMIN_USER)[0], True)
 
     def test_delete_renumbers_ids_and_memberships(self):
         self.add_user("alice")
@@ -528,6 +535,51 @@ class TestGroups(unittest.TestCase):
         # empty code rejected
         self.assertEqual(webapp.change_access_code(lid, "   ", "alice")[1], "code_empty")
 
+    def test_private_group_requires_code(self):
+        self.add_user("alice")
+        self.add_user("bob")
+        webapp.create_group("A", "1", "alice")
+        self.assertFalse(webapp.all_groups()[0]["is_public"])
+        self.assertEqual(webapp.join_group("A", "nope", "bob")[1], "wrong_access_code")
+        self.assertEqual(webapp.join_group("A", "", "bob")[1], "wrong_access_code")
+        ok, key = webapp.join_group("A", "1", "bob")
+        self.assertTrue(ok)
+        self.assertEqual(key, "group_joined")
+
+    def test_public_group_joins_without_code(self):
+        self.add_user("alice")
+        self.add_user("bob")
+        self.add_user("carol")
+        webapp.create_group("Open", "irrelevant", "alice", is_public=True)
+        self.assertTrue(webapp.all_groups()[0]["is_public"])
+        ok, key = webapp.join_group("Open", "", "bob")
+        self.assertTrue(ok)
+        self.assertEqual(key, "group_joined")
+        ok, key = webapp.join_group("Open", "wrong", "carol")
+        self.assertTrue(ok)
+        self.assertEqual(key, "group_joined")
+
+    def test_admin_created_group_is_public_and_code_free(self):
+        self.add_user("alice")
+        webapp.create_group("Staff", "secret", None)
+        g = webapp.all_groups()[0]
+        self.assertTrue(g["is_public"])
+        ok, key = webapp.join_group("Staff", "", "alice")
+        self.assertTrue(ok)
+        self.assertEqual(key, "group_joined")
+
+    def test_admin_cannot_access_private_groups(self):
+        self.add_user("alice")
+        self.add_user("bob")
+        webapp.create_group("Secret", "1", "alice")
+        webapp.join_group("Secret", "1", "bob")
+        lid = webapp.all_groups()[0]["id"]
+        self.assertFalse(webapp.can_manage_group(lid, webapp.ADMIN_USER))
+        self.assertEqual(webapp.kick_member(lid, "bob", webapp.ADMIN_USER)[1], "not_allowed")
+        self.assertEqual(webapp.rename_group(lid, "X", webapp.ADMIN_USER)[1], "not_allowed")
+        self.assertEqual(webapp.change_access_code(lid, "2", webapp.ADMIN_USER)[1], "not_allowed")
+        self.assertEqual(webapp.delete_group(lid, webapp.ADMIN_USER)[1], "not_allowed")
+
     def test_admin_manages_only_own_groups_members(self):
         self.add_user("alice")
         self.add_user("bob")
@@ -570,6 +622,33 @@ class TestGroups(unittest.TestCase):
         self.add_user("alice")
         ok, _ = webapp.rename_user("alice", "alice")
         self.assertTrue(ok)
+
+    def test_join_share_permission(self):
+        self.add_user("alice")
+        self.add_user("bob")
+        webapp.create_group("A", "1", "alice")
+        webapp.join_group("A", "1", "bob", "budget")
+        members = {m["username"]: m["share"] for m in webapp.group_members(1)}
+        self.assertEqual(members["alice"], "both")  # owner always shares
+        self.assertEqual(members["bob"], "budget")
+        self.assertTrue(webapp.granted_share("budget", "budget"))
+        self.assertFalse(webapp.granted_share("budget", "diet"))
+        self.assertTrue(webapp.granted_share("both", "diet"))
+        self.assertTrue(webapp.granted_share("both", "budget"))
+        self.assertTrue(webapp.granted_share("diet", "diet"))
+
+    def test_set_member_share_and_invalid_default(self):
+        self.add_user("alice")
+        self.add_user("bob")
+        webapp.create_group("A", "1", "alice")
+        webapp.join_group("A", "1", "bob", "diet")
+        self.assertEqual(webapp.member_share(1, "bob"), "diet")
+        self.assertTrue(webapp.set_member_share(1, "bob", "both"))
+        self.assertEqual(webapp.member_share(1, "bob"), "both")
+        self.assertFalse(webapp.set_member_share(1, "ghost", "diet"))
+        self.add_user("carol")
+        webapp.join_group("A", "1", "carol", "bogus")
+        self.assertEqual(webapp.member_share(1, "carol"), "both")
 
     def test_rename_admin_blocked(self):
         self.add_user("alice")
@@ -646,7 +725,8 @@ class TestAdminRestrictions(unittest.TestCase):
     def test_admin_can_create_manage_but_not_join(self):
         self.at.run(timeout=60)
         keys = {t.key for t in self.at.text_input}
-        self.assertTrue({"ag_name", "ag_code"} <= keys)
+        self.assertIn("ag_name", keys)
+        self.assertNotIn("ag_code", keys)  # admin groups are public: name only
         self.assertTrue(any("Create group" in b.label for b in self.at.button))
         self.assertFalse(keys & {"grp_name", "grp_code", "jg_name", "jg_code"})
 
@@ -675,9 +755,10 @@ class TestAdminRestrictions(unittest.TestCase):
                          ("bob", salt, webapp.hash_password("pw", salt)))
         webapp.create_group("Team", "x", "bob")
         self.at.run(timeout=60)
+        # private user groups are not shown or manageable by the admin at all
         self.assertEqual([s for s in self.at.selectbox if s.key == "adm_gkick_sel_1"], [])
-        self.assertTrue(any("—" in m.value for m in self.at.markdown))
-        self.assertTrue(any("Remove group" in b.label for b in self.at.button))
+        self.assertFalse(any("—" in m.value for m in self.at.markdown))
+        self.assertFalse(any("Remove group" in b.label for b in self.at.button))
 
     def test_normal_user_still_has_everything(self):
         salt = os.urandom(16).hex()
@@ -824,6 +905,91 @@ class TestGroupUI(unittest.TestCase):
         self.assertFalse(any("Team A" in o for o in dd.options))
         self.assertEqual(dd.index, 0)
 
+    def test_owner_member_view_default_shares_both(self):
+        webapp.create_group("Team A", "x", "bob")
+        webapp.join_group("Team A", "x", "alice")
+        data = webapp.default_data()
+        today = date.today()
+        data["days"][today.isoformat()] = [diet_entry(150)]
+        data["spends"][today.isoformat()] = [spend_entry(25)]
+        webapp.save_user_data("alice", data)
+        self.at.run(timeout=60)
+        self.select_group("Team A")
+        sel = [s for s in self.at.selectbox if s.key == "grp_rec_sel_1"][0]
+        sel.set_value("alice")
+        self.at.run(timeout=60)
+        self.assertFalse(any("Permission not granted" in i.value for i in self.at.info))
+        table_text = " | ".join(str(t.value) for t in self.at.table)
+        self.assertIn("150 kcal", table_text)
+        self.assertIn("lunch", table_text)
+        self.assertIn("25 HKD", table_text)
+
+    def test_owner_member_view_gates_budget_only(self):
+        webapp.create_group("Team A", "x", "bob")
+        webapp.join_group("Team A", "x", "alice", "budget")
+        data = webapp.default_data()
+        today = date.today()
+        data["days"][today.isoformat()] = [diet_entry(150)]
+        data["spends"][today.isoformat()] = [spend_entry(25)]
+        webapp.save_user_data("alice", data)
+        self.at.run(timeout=60)
+        self.select_group("Team A")
+        sel = [s for s in self.at.selectbox if s.key == "grp_rec_sel_1"][0]
+        sel.set_value("alice")
+        self.at.run(timeout=60)
+        self.assertGreaterEqual(
+            sum(1 for i in self.at.info if "Permission not granted" in i.value), 1)
+        table_text = " | ".join(str(t.value) for t in self.at.table)
+        self.assertIn("lunch", table_text)
+        self.assertNotIn("150 kcal", table_text)
+
+    def test_owner_member_view_gates_diet_only(self):
+        webapp.create_group("Team A", "x", "bob")
+        webapp.join_group("Team A", "x", "alice", "diet")
+        data = webapp.default_data()
+        today = date.today()
+        data["days"][today.isoformat()] = [diet_entry(150)]
+        data["spends"][today.isoformat()] = [spend_entry(25)]
+        webapp.save_user_data("alice", data)
+        self.at.run(timeout=60)
+        self.select_group("Team A")
+        sel = [s for s in self.at.selectbox if s.key == "grp_rec_sel_1"][0]
+        sel.set_value("alice")
+        self.at.run(timeout=60)
+        self.assertGreaterEqual(
+            sum(1 for i in self.at.info if "Permission not granted" in i.value), 1)
+        table_text = " | ".join(str(t.value) for t in self.at.table)
+        self.assertIn("150 kcal", table_text)
+        self.assertNotIn("lunch", table_text)
+
+    def test_create_public_group_skips_code(self):
+        radio = [r for r in self.at.radio if r.key == "grp_type"][0]
+        radio.set_value("Public")
+        self.at.run(timeout=60)
+        keys = {t.key for t in self.at.text_input}
+        self.assertNotIn("grp_code", keys)
+        self.at.text_input(key="grp_name").set_value("Open Group")
+        [b for b in self.at.button if b.label.strip() == "Create group"][0].click()
+        self.at.run(timeout=60)
+        groups = webapp.my_groups("bob")
+        self.assertEqual(len(groups), 1)
+        self.assertEqual(groups[0]["name"], "Open Group")
+        self.assertTrue(groups[0]["is_public"])
+
+    def test_join_public_group_without_code(self):
+        webapp.create_group("Open Team", "x", None)
+        self.at.run(timeout=60)
+        dd = [s for s in self.at.selectbox if s.key == "grp_dd"][0]
+        join_opt = [o for o in dd.options if "Join" in o][0]
+        dd.set_value(join_opt)
+        self.at.run(timeout=60)
+        self.at.text_input(key="jg_name").set_value("Open Team")
+        self.at.text_input(key="jg_code").set_value("")
+        [b for b in self.at.button if b.label.strip() == "Join group"][0].click()
+        self.at.run(timeout=60)
+        members = webapp.my_groups("bob")[0]["members"]
+        self.assertTrue(any(m["username"] == "bob" and not m["is_owner"] for m in members))
+
 
 def diet_entry(calories=100, name="Salad"):
     return {"name": name, "meal": "lunch", "calories": calories, "amount": None, "extras": {}}
@@ -850,11 +1016,13 @@ class TestStorageLimit(unittest.TestCase):
 
     def test_blocker_only_covers_new_days(self):
         data = webapp.default_data()
-        for i in range(30):
-            data["days"][(date(2026, 5, 1) + timedelta(days=i)).isoformat()] = [diet_entry()]
-        self.assertFalse(webapp.storage_blocker(data, date(2026, 5, 1)))
-        self.assertTrue(webapp.storage_blocker(data, date(2026, 6, 1)))
-        self.assertFalse(webapp.storage_blocker(data, date(2026, 5, 15)))
+        start = date(2026, 5, 1)
+        for i in range(webapp.MAX_DAYS):
+            data["days"][(start + timedelta(days=i)).isoformat()] = [diet_entry()]
+        self.assertFalse(webapp.storage_blocker(data, start))
+        self.assertTrue(
+            webapp.storage_blocker(data, start + timedelta(days=webapp.MAX_DAYS)))
+        self.assertFalse(webapp.storage_blocker(data, start + timedelta(days=1)))
 
     def test_drop_oldest_day_removes_data(self):
         data = webapp.default_data()

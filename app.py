@@ -19,7 +19,7 @@ DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "streamlit_da
 
 ADMIN_USER = "admin"
 
-MAX_DAYS = 2
+MAX_DAYS = 60
 
 
 def tr(key):
@@ -78,7 +78,9 @@ def init_db():
             "PRIMARY KEY (leaderboard_id, username))"
         )
         _add_column(conn, "leaderboards", "owner", "TEXT")
+        _add_column(conn, "leaderboards", "is_public", "INTEGER DEFAULT 0")
         _add_column(conn, "memberships", "is_owner", "INTEGER DEFAULT 0")
+        _add_column(conn, "memberships", "share", "TEXT DEFAULT 'both'")
 
 
 def hash_password(password, salt_hex):
@@ -146,58 +148,113 @@ def reset_password(username, new_password):
 
 # -------------------------------------------------------------- groups
 
-def create_group(name, code, username=None):
-    """Create a group. `username` (optional) becomes its owner and first member."""
-    if not name or not code:
+SHARE_OPTIONS = ("diet", "budget", "both")
+
+
+def _valid_share(share):
+    return share if share in SHARE_OPTIONS else "both"
+
+
+def create_group(name, code, username=None, is_public=False):
+    """Create a group. `username` (optional) becomes its owner and first member.
+
+    Admin-created groups are always public (joinable by name only). User-created
+    groups are private by default and require an access code to join."""
+    name = (name or "").strip()
+    code = (code or "").strip()
+    if not username or username == ADMIN_USER:
+        is_public = True
+    if not name or (not is_public and not code):
         return False, "name_empty"
     with get_db() as conn:
         if conn.execute("SELECT 1 FROM leaderboards WHERE name = ?", (name,)).fetchone():
             return False, "group_exists"
         cur = conn.execute(
-            "INSERT INTO leaderboards (name, access_code, owner) VALUES (?, ?, ?)",
-            (name, code, username or ADMIN_USER),
+            "INSERT INTO leaderboards (name, access_code, owner, is_public) VALUES (?, ?, ?, ?)",
+            (name, code, username or ADMIN_USER, 1 if is_public else 0),
         )
         if username:
             conn.execute(
-                "INSERT INTO memberships (leaderboard_id, username, is_owner) VALUES (?, ?, 1)",
+                "INSERT INTO memberships (leaderboard_id, username, is_owner, share) VALUES (?, ?, 1, 'both')",
                 (cur.lastrowid, username),
             )
     return True, "group_created"
 
 
-def join_group(name, code, username):
-    """Join an existing group by name + access code (as a regular member)."""
-    if not name or not code:
+def join_group(name, code, username, share="both"):
+    """Join an existing group by name. Private groups need the access code;
+    public groups can be joined with just the name.
+
+    `share` is what the member lets the group owner view: 'diet', 'budget'
+    or 'both' (default)."""
+    name = (name or "").strip()
+    code = (code or "").strip()
+    if not name:
         return False, "wrong_access_code"
+    share = _valid_share(share)
     with get_db() as conn:
         row = conn.execute(
-            "SELECT id FROM leaderboards WHERE name = ? AND access_code = ?", (name, code)
+            "SELECT id, access_code, is_public FROM leaderboards WHERE name = ?", (name,)
         ).fetchone()
         if not row:
             return False, "wrong_access_code"
-        lid = row[0]
+        lid, group_code, is_public = row[0], row[1] or "", bool(row[2])
+        if not is_public and code != group_code:
+            return False, "wrong_access_code"
         if conn.execute(
             "SELECT 1 FROM memberships WHERE leaderboard_id = ? AND username = ?",
             (lid, username),
         ).fetchone():
             return False, "already_member"
         conn.execute(
-            "INSERT INTO memberships (leaderboard_id, username, is_owner) VALUES (?, ?, 0)",
-            (lid, username),
+            "INSERT INTO memberships (leaderboard_id, username, is_owner, share) VALUES (?, ?, 0, ?)",
+            (lid, username, share),
         )
     return True, "group_joined"
 
 
 def group_members(lid):
-    """Members of a group as [{username, is_owner}] sorted by username."""
+    """Members of a group as [{username, is_owner, share}] sorted by username."""
     with get_db() as conn:
         return [
-            {"username": r[0], "is_owner": bool(r[1])}
+            {"username": r[0], "is_owner": bool(r[1]), "share": r[2] or "both"}
             for r in conn.execute(
-                "SELECT username, is_owner FROM memberships "
+                "SELECT username, is_owner, share FROM memberships "
                 "WHERE leaderboard_id = ? ORDER BY username", (lid,),
             ).fetchall()
         ]
+
+
+def member_share(lid, username):
+    """What a member lets the group owner view ('diet' | 'budget' | 'both')."""
+    with get_db() as conn:
+        row = conn.execute(
+            "SELECT share FROM memberships WHERE leaderboard_id = ? AND username = ?",
+            (lid, username),
+        ).fetchone()
+    return (row[0] or "both") if row else "both"
+
+
+def set_member_share(lid, username, share):
+    """A member updates what the owner may view of their records."""
+    share = _valid_share(share)
+    with get_db() as conn:
+        if not conn.execute(
+            "SELECT 1 FROM memberships WHERE leaderboard_id = ? AND username = ?",
+            (lid, username),
+        ).fetchone():
+            return False
+        conn.execute(
+            "UPDATE memberships SET share = ? WHERE leaderboard_id = ? AND username = ?",
+            (share, lid, username),
+        )
+    return True
+
+
+def granted_share(share, kind):
+    """True when a member's share setting allows viewing `kind` ('diet'/'budget')."""
+    share = _valid_share(share)
+    return share == "both" or share == kind
 
 
 def is_group_owner(lid, username):
@@ -224,10 +281,18 @@ def leave_group(lid, username):
     return True, "group_left"
 
 
+def group_public(lid):
+    """True when the group is public (joinable by name only)."""
+    with get_db() as conn:
+        row = conn.execute("SELECT is_public FROM leaderboards WHERE id = ?", (lid,)).fetchone()
+        return bool(row and row[0])
+
+
 def can_manage_group(lid, username):
-    """Admin manages the groups they created; otherwise owner members manage it."""
+    """Owner members manage their group; the admin only manages public groups
+    (the ones the admin created) and never touches private groups."""
     if username == ADMIN_USER:
-        return group_owner(lid) == ADMIN_USER
+        return group_public(lid)
     return is_group_owner(lid, username)
 
 
@@ -281,8 +346,9 @@ def demote_owner(lid, username, actor):
 
 
 def delete_group(lid, actor):
-    """Delete a group and its memberships. Allowed for its owner(s) or admin."""
-    if actor != ADMIN_USER and not can_manage_group(lid, actor):
+    """Delete a group and its memberships. Allowed for its owner(s) or, for
+    public groups, the admin."""
+    if not can_manage_group(lid, actor):
         return False, "not_allowed"
     with get_db() as conn:
         conn.execute("DELETE FROM leaderboards WHERE id = ?", (lid,))
@@ -305,16 +371,17 @@ def delete_group(lid, actor):
 def my_groups(username):
     with get_db() as conn:
         rows = conn.execute(
-            "SELECT l.id, l.name, l.access_code, l.owner, m.is_owner "
+            "SELECT l.id, l.name, l.access_code, l.owner, l.is_public, m.is_owner "
             "FROM leaderboards l JOIN memberships m ON m.leaderboard_id = l.id "
             "WHERE m.username = ? ORDER BY l.name",
             (username,),
         ).fetchall()
     groups = []
-    for lid, name, code, owner, user_is_owner in rows:
+    for lid, name, code, owner, is_public, user_is_owner in rows:
         members = group_members(lid)
         groups.append({
             "id": lid, "name": name, "access_code": code, "owner": owner,
+            "is_public": bool(is_public),
             "members": members, "member_count": len(members),
             "user_is_owner": bool(user_is_owner),
         })
@@ -324,13 +391,14 @@ def my_groups(username):
 def all_groups():
     with get_db() as conn:
         rows = conn.execute(
-            "SELECT id, name, access_code, owner FROM leaderboards ORDER BY name"
+            "SELECT id, name, access_code, owner, is_public FROM leaderboards ORDER BY name"
         ).fetchall()
     groups = []
-    for lid, name, code, owner in rows:
+    for lid, name, code, owner, is_public in rows:
         members = group_members(lid)
         groups.append({
             "id": lid, "name": name, "access_code": code, "owner": owner,
+            "is_public": bool(is_public),
             "members": members, "member_count": len(members),
         })
     return groups
@@ -339,7 +407,7 @@ def all_groups():
 def rename_group(lid, new_name, actor):
     if not new_name:
         return False, "name_empty"
-    if actor != ADMIN_USER and not can_manage_group(lid, actor):
+    if not can_manage_group(lid, actor):
         return False, "not_allowed"
     with get_db() as conn:
         if conn.execute(
@@ -354,7 +422,7 @@ def change_access_code(lid, new_code, actor):
     new_code = new_code.strip()
     if not new_code:
         return False, "code_empty"
-    if actor != ADMIN_USER and not can_manage_group(lid, actor):
+    if not can_manage_group(lid, actor):
         return False, "not_allowed"
     with get_db() as conn:
         conn.execute("UPDATE leaderboards SET access_code = ? WHERE id = ?", (new_code, lid))
@@ -865,11 +933,20 @@ def food_table(data, day, editable=True):
         return
     cats = diet_categories(data)
     if not editable:
-        rows = [
-            {"#": i, tr("food"): e["name"], tr("meal"): tr(e["meal"]),
-             tr("amount"): f"{e['amount'][0]:g} {unit_display(e['amount'][1])}" if e.get("amount") else ""}
-            for i, e in enumerate(entries, start=1)
-        ]
+        rows = []
+        for i, e in enumerate(entries, start=1):
+            row = {"#": i, tr("food"): e["name"], tr("meal"): tr(e["meal"])}
+            if e.get("amount"):
+                amt_v, amt_u = e["amount"]
+                row[tr("amount")] = f"{amt_v:g} {unit_display(amt_u)}"
+            extras = e.get("extras") or {}
+            for key, cat in cats.items():
+                if key == "calories":
+                    row[cat.name] = f"{e['calories']:g} {cat.unit}"
+                elif key in extras:
+                    v, u = extras[key]
+                    row[cat.name] = f"{v:g} {unit_display(u)}"
+            rows.append(row)
         st.table(rows)
         return
 
@@ -1240,33 +1317,76 @@ def render_budget_section(data, selected):
     st.write("  |  ".join(f"{labels[k]}: {v}" for k, v in streaks.items()))
 
 
-def show_records(data, day):
-    """Read-only diet/budget records of one user for a chosen day."""
+def diet_limits_table(data):
+    """The member's diet category limits, as a table."""
+    cats = diet_categories(data)
+    rows = [{
+        "#": i, tr("category_name"): cat.name,
+        tr("daily_limit"): f"{cat.limit:g} {unit_display(cat.unit)}",
+    } for i, cat in enumerate(cats.values(), start=1)]
+    st.table(rows)
+
+
+def member_diet_view(data, day):
+    """The member's diet records for one day: totals, limits and item table."""
     day_obj = build_day(data, day)
     cats = diet_categories(data)
-    st.markdown(f"**{tr('diet')}**")
+    parts = []
+    for key, cat in cats.items():
+        total = day_obj.sum_of(key, cat.unit)
+        mark = " 🔴" if total.amount > cat.limit else " ✅"
+        parts.append(f"{cat.name}: **{total.amount:g} {unit_display(total.unit)}**{mark}")
     if day_obj.entries:
-        parts = []
-        for key, cat in cats.items():
-            total = day_obj.sum_of(key, cat.unit)
-            parts.append(f"{cat.name}: {total.amount:g} {unit_display(total.unit)}" + (" 🔴" if total.amount > cat.limit else " ✅"))
-        st.write("  |  ".join(parts))
+        st.write(tr("day_total") + "  |  " + "  |  ".join(parts))
     else:
         st.write(tr("no_entries"))
+    st.caption(tr("diet_limits"))
+    diet_limits_table(data)
     food_table(data, day, False)
 
-    st.markdown(f"**{tr('budget')}**")
+
+def member_budget_view(data, day):
+    """The member's budget records for one day: total, limit and item table."""
     spends = spends_objects(data)
     period = data["budget_period"]
     limit = data["budget_limit"]
     total = sum(int(e.price.amount) for e in period_expenses(spends, period, day))
     flag = tr("over_limit") if total > limit else tr("within_limit")
-    st.write(f"{tr(period)} {tr('total')}: {total} HKD / {tr('limit_hkd')}: {limit} | {flag}")
+    st.write(
+        f"{tr('limit_hkd')}: **{limit:g} HKD** ({tr(period)})  |  "
+        f"{tr(period)} {tr('total')}: **{total} HKD** {flag}"
+    )
     spending_table(data, day, False)
 
 
+def show_records(data, day, share="both"):
+    """Read-only records of one user for a chosen day, honouring the sharing
+    permission they chose for the group owner. Diet and budget are shown as
+    tables, exactly the same presenter the owner's own view uses."""
+    st.markdown(f"**🥗 {tr('diet')}**")
+    if granted_share(share, "diet"):
+        member_diet_view(data, day)
+    else:
+        st.info(tr("permission_not_granted"))
+
+    st.markdown(f"**💰 {tr('budget')}**")
+    if granted_share(share, "budget"):
+        member_budget_view(data, day)
+    else:
+        st.info(tr("permission_not_granted"))
+
+
+def share_display(share):
+    return {
+        "diet": tr("shares_diet"),
+        "budget": tr("shares_budget"),
+        "both": tr("shares_both"),
+    }.get(_valid_share(share), tr("shares_none"))
+
+
 def view_member_records(gid):
-    """Group owners: read-only records of a chosen member."""
+    """Group owners: read-only records of a chosen member, gated by the share
+    permission that member chose when joining the group."""
     members = group_members(gid)
     usernames = [m["username"] for m in members]
     if not usernames:
@@ -1274,11 +1394,13 @@ def view_member_records(gid):
         return
     target = st.selectbox(tr("user"), usernames, key=f"grp_rec_sel_{gid}")
     data = load_user_data(target)
+    share = member_share(gid, target)
+    st.caption(f"🔒 {share_display(share)}")
     selected = calendar_widget(
         f"grp_{gid}_{target}", lambda d: (diet_status(data, d), budget_status(data, d))
     )
     st.subheader(f"{target} · {format_date(selected)}")
-    show_records(data, selected)
+    show_records(data, selected, share)
 
 
 def groups_section():
@@ -1290,7 +1412,8 @@ def groups_section():
         "➕ " + tr("join_group"): ("form", "join"),
     }
     for g in groups:
-        options[f"{g['name']} ({g['member_count']} {tr('members')})"] = ("group", g)
+        badge = tr("group_public") if g["is_public"] else tr("group_private")
+        options[f"[{badge}] {g['name']} ({g['member_count']} {tr('members')})"] = ("group", g)
     labels = list(options)
     default = 2 if groups else 0
     choice = st.selectbox(tr("groups"), labels, index=default, key="grp_dd")
@@ -1298,11 +1421,22 @@ def groups_section():
 
     if kind == "form":
         if payload == "add":
+            type_labels = [tr("group_private"), tr("group_public")]
+            grp_public = st.radio(
+                tr("group_type"), type_labels, index=0, horizontal=True, key="grp_type",
+            ) == tr("group_public")
             with st.form("grp_create"):
                 g_name = st.text_input(tr("group_name"), key="grp_name")
-                g_code = st.text_input(tr("access_code"), type="password", key="grp_code")
+                if not grp_public:
+                    g_code = st.text_input(tr("access_code"), type="password", key="grp_code")
+                else:
+                    g_code = ""
+                    st.caption(tr("public_no_code"))
                 if st.form_submit_button(tr("create_group")):
-                    ok, key = create_group(g_name.strip(), g_code.strip(), st.session_state.user)
+                    ok, key = create_group(
+                        g_name.strip(), (g_code or "").strip(), st.session_state.user,
+                        is_public=grp_public,
+                    )
                     if ok:
                         for k in ("grp_name", "grp_code"):
                             st.session_state.pop(k, None)
@@ -1314,11 +1448,22 @@ def groups_section():
             with st.form("grp_join"):
                 jg_name = st.text_input(tr("group_name"), key="jg_name")
                 jg_code = st.text_input(tr("access_code"), type="password", key="jg_code")
+                st.caption(tr("join_hint"))
+                share_labels = [tr("diet"), tr("budget"), tr("share_both")]
+                share_choice = st.radio(
+                    tr("share_with_owner"), share_labels, index=2, key="jg_share",
+                    horizontal=True,
+                )
+                st.caption(tr("sharing_info"))
                 if st.form_submit_button(tr("join_group")):
-                    ok, key = join_group(jg_name.strip(), jg_code.strip(), st.session_state.user)
+                    share = SHARE_OPTIONS[share_labels.index(share_choice)]
+                    ok, key = join_group(
+                        jg_name.strip(), jg_code.strip(), st.session_state.user, share
+                    )
                     if ok:
                         for k in ("jg_name", "jg_code"):
                             st.session_state.pop(k, None)
+                        st.session_state.pop("jg_share", None)
                         st.success(tr(key))
                         st.rerun()
                     else:
@@ -1349,6 +1494,20 @@ def groups_section():
             st.table(rows)
         else:
             st.info(tr("no_members_yet"))
+
+    st.divider()
+    st.markdown(f"##### 🔒 {tr('sharing')}")
+    st.caption(tr("sharing_info"))
+    share_labels = [tr("diet"), tr("budget"), tr("share_both")]
+    my_share = _valid_share(member_share(group["id"], me))
+    chosen = st.radio(
+        tr("share_with_owner"), share_labels,
+        index=SHARE_OPTIONS.index(my_share), key=f"my_share_{group['id']}", horizontal=True,
+    )
+    if st.button(tr("update_sharing"), key=f"my_share_btn_{group['id']}"):
+        set_member_share(group["id"], me, SHARE_OPTIONS[share_labels.index(chosen)])
+        st.success(tr("sharing_updated"))
+        st.rerun()
 
     if group["user_is_owner"]:
         st.divider()
@@ -1400,16 +1559,19 @@ def groups_section():
                     else:
                         st.error(tr(key))
         with c2:
-            with st.form(f"g_code_{group['id']}"):
-                new_code = st.text_input(tr("access_code"), value=group["access_code"],
-                                         key=f"gc_{group['id']}")
-                if st.form_submit_button(tr("change_code")):
-                    ok, key = change_access_code(group["id"], new_code.strip(), me)
-                    if ok:
-                        st.success(tr(key))
-                        st.rerun()
-                    else:
-                        st.error(tr(key))
+            if group["is_public"]:
+                st.caption(tr("public_no_code"))
+            else:
+                with st.form(f"g_code_{group['id']}"):
+                    new_code = st.text_input(tr("access_code"), value=group["access_code"],
+                                             key=f"gc_{group['id']}")
+                    if st.form_submit_button(tr("change_code")):
+                        ok, key = change_access_code(group["id"], new_code.strip(), me)
+                        if ok:
+                            st.success(tr(key))
+                            st.rerun()
+                        else:
+                            st.error(tr(key))
 
         if st.button(tr("remove_group"), key=f"g_del_btn_{group['id']}"):
             st.session_state[f"g_del_conf_{group['id']}"] = True
@@ -1523,41 +1685,35 @@ def admin_panel():
 
 
 def admin_groups():
-    """Admin view of every group: create, rename, change access code, remove.
-    Members are only visible (and kickable) in groups the admin created."""
+    """Admin view of public groups only: create, rename, remove, kick members.
+    Private (user-created) groups are never shown or managed by the admin."""
     st.markdown(f"### 🏆 {tr('groups')}")
     with st.form("adm_grp_create"):
-        c1, c2 = st.columns(2)
-        with c1:
-            ag_name = st.text_input(tr("group_name"), key="ag_name")
-        with c2:
-            ag_code = st.text_input(tr("access_code"), type="password", key="ag_code")
+        ag_name = st.text_input(tr("group_name"), key="ag_name")
+        st.caption(tr("admin_group_public"))
         if st.form_submit_button(tr("create_group")):
-            ok, key = create_group(ag_name.strip(), ag_code.strip(), None)
+            ok, key = create_group(ag_name.strip(), "", None, is_public=True)
             if ok:
-                for k in ("ag_name", "ag_code"):
-                    st.session_state.pop(k, None)
+                st.session_state.pop("ag_name", None)
                 st.success(tr(key))
                 st.rerun()
             else:
                 st.error(tr(key))
     st.divider()
 
-    groups = all_groups()
+    groups = [g for g in all_groups() if g["is_public"]]
     if not groups:
-        st.info(tr("no_groups"))
+        st.info(tr("no_public_groups"))
         return
     st.caption(tr("all_groups"))
     with st.container(height=460):
         for g in groups:
-            is_admin_group = g["owner"] == ADMIN_USER
-            member_txt = ", ".join(m["username"] for m in g["members"]) if is_admin_group else "—"
+            member_txt = ", ".join(m["username"] for m in g["members"]) or "—"
             st.write(
-                f"**{g['name']}** (id {g['id']}) · {tr('owner')}: {g['owner']} · "
-                f"{tr('access_code')}: `{g['access_code']}` · "
-                f"{tr('members')}: {member_txt or '—'}"
+                f"**{g['name']}** (id {g['id']}) · {tr('public_group')} · "
+                f"{tr('owner')}: {g['owner']} · {tr('members')}: {member_txt}"
             )
-            c1, c2, c3 = st.columns(3)
+            c1, c2 = st.columns(2)
             with c1:
                 with st.form(f"adm_grp_name_{g['id']}"):
                     new_name = st.text_input(tr("group_name"), value=g["name"],
@@ -1570,17 +1726,6 @@ def admin_groups():
                         else:
                             st.error(tr(key))
             with c2:
-                with st.form(f"adm_grp_code_{g['id']}"):
-                    new_code = st.text_input(tr("access_code"), value=g["access_code"],
-                                             key=f"agc_{g['id']}")
-                    if st.form_submit_button(tr("change_code")):
-                        ok, key = change_access_code(g["id"], new_code.strip(), ADMIN_USER)
-                        if ok:
-                            st.success(tr(key))
-                            st.rerun()
-                        else:
-                            st.error(tr(key))
-            with c3:
                 if st.session_state.get(f"adm_gdel_{g['id']}"):
                     st.warning(tr("delete_warning"))
                     rc1, rc2 = st.columns(2)
@@ -1598,7 +1743,7 @@ def admin_groups():
                     if st.button(tr("remove_group"), key=f"adm_gdel_btn_{g['id']}"):
                         st.session_state[f"adm_gdel_{g['id']}"] = True
                         st.rerun()
-            if is_admin_group and g["members"]:
+            if g["members"]:
                 kick_sel = st.selectbox(
                     tr("kick_member"), [m["username"] for m in g["members"]],
                     key=f"adm_gkick_sel_{g['id']}",
