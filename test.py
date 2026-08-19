@@ -722,6 +722,10 @@ class TestAdminRestrictions(unittest.TestCase):
         self.assertTrue(any("Admin panel" in l for l in labels))
         self.assertTrue(any("Groups" in l for l in labels))
 
+    def test_admin_sees_user_manual(self):
+        labels = [e.label for e in self.at.expander]
+        self.assertTrue(any("User manual" in l for l in labels))
+
     def test_admin_can_create_manage_but_not_join(self):
         self.at.run(timeout=60)
         keys = {t.key for t in self.at.text_input}
@@ -823,6 +827,10 @@ class TestGroupUI(unittest.TestCase):
         self.assertEqual(dd.index, 0)
         keys = {t.key for t in self.at.text_input}
         self.assertIn("grp_name", keys)
+
+    def test_user_manual_present(self):
+        labels = [e.label for e in self.at.expander]
+        self.assertTrue(any("User manual" in l for l in labels))
 
     def test_join_action_shows_join_form(self):
         webapp.create_group("Team A", "x", None)

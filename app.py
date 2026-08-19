@@ -1776,7 +1776,19 @@ def render_admin_view():
         admin_groups()
 
 
+def user_manual():
+    """Bilingual quick-start guide shown at the top of the app."""
+    with st.expander("📖 " + tr("user_manual")):
+        for key in (
+            "manual_food", "manual_budget", "manual_calendar", "manual_streaks",
+            "manual_groups", "manual_group_owner", "manual_sharing",
+            "manual_storage", "manual_admin",
+        ):
+            st.markdown("- " + tr(key))
+
+
 def render_app(data):
+    user_manual()
     if st.session_state.user == ADMIN_USER:
         render_admin_view()
         return
