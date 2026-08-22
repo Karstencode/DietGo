@@ -46,14 +46,46 @@ def UNIT_INDEX(u):
 
 # ------------------------------------------------------------- database
 
+def remote_db_config():
+    """Turso (hosted SQLite) credentials, if configured via Streamlit secrets
+    (`turso_database_url` / `turso_auth_token`) or environment variables.
+    When present, all data lives on Turso and survives app sleeps/restarts."""
+    url = token = None
+    try:
+        url = st.secrets.get("turso_database_url")
+        token = st.secrets.get("turso_auth_token")
+    except Exception:
+        pass
+    return (
+        url or os.environ.get("TURSO_DATABASE_URL"),
+        token or os.environ.get("TURSO_AUTH_TOKEN"),
+    )
+
+
 def get_db():
+    url, token = remote_db_config()
+    if url:
+        import libsql_experimental as sql3
+        return sql3.connect(url, auth_token=token or "")
     return sqlite3.connect(DB_PATH)
 
 
 def _add_column(conn, table, column, decl):
-    cols = [r[1] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()]
-    if column not in cols:
+    """Portable ADD COLUMN: prefers PRAGMA introspection, but tolerates drivers
+    that don't support PRAGMA (e.g. remote libSQL) by attempting the ALTER and
+    ignoring 'duplicate column' failures."""
+    try:
+        cols = [r[1] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()]
+        if column in cols:
+            return
+    except Exception:
+        pass  # pragma unsupported remotely; the ALTER below decides
+    try:
         conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
+    except Exception as exc:
+        msg = str(exc).lower()
+        if "duplicate column" not in msg and "already exists" not in msg:
+            raise
 
 
 def init_db():
@@ -174,9 +206,14 @@ def create_group(name, code, username=None, is_public=False):
             (name, code, username or ADMIN_USER, 1 if is_public else 0),
         )
         if username:
+            lid = cur.lastrowid
+            if not lid:  # some drivers don't expose lastrowid; name is unique
+                lid = conn.execute(
+                    "SELECT id FROM leaderboards WHERE name = ?", (name,)
+                ).fetchone()[0]
             conn.execute(
                 "INSERT INTO memberships (leaderboard_id, username, is_owner, share) VALUES (?, ?, 1, 'both')",
-                (cur.lastrowid, username),
+                (lid, username),
             )
     return True, "group_created"
 

@@ -104,7 +104,33 @@ Set the admin password via the `ADMIN_PASSWORD` environment variable or in
    select the repo, set **Main file path** to `app.py`, and deploy.
 3. `requirements.txt` installs `streamlit` automatically.
 
-> Data for the web version is stored in a local SQLite database
-> (`streamlit_data.db`) next to `app.py`. On Community Cloud each app
-> gets persistent network storage, but for guaranteed durability you can point
-> `DB_PATH` at hosted storage (e.g. a PostgreSQL/Supabase backend).
+> **Where your data lives.** By default the web app uses a local SQLite file
+> (`streamlit_data.db`) next to `app.py` — perfect for `streamlit run app.py`
+> on your own machine. On Streamlit Community Cloud that filesystem is
+> **ephemeral**: when a free-tier app sleeps (or restarts/redeploys), local
+> files are wiped.
+
+### Free durable hosting (no data loss, even when the app sleeps)
+
+Point the app at [Turso](https://turso.tech) — a free hosted SQLite service
+that never sleeps and keeps your data forever:
+
+1. Create a free Turso account and database:
+   ```bash
+   curl -sSfL https://get.tur.so/install.sh | bash
+   turso auth signup
+   turso db create diet-budget-diary
+   turso db show diet-budget-diary --url          # libsql://… URL
+   turso db tokens create diet-budget-diary       # auth token
+   ```
+2. Give the credentials to the app via Streamlit secrets (Community Cloud:
+   *App → Settings → Secrets*) or environment variables:
+   ```toml
+   turso_database_url = "libsql://diet-budget-diary-<you>.turso.io"
+   turso_auth_token = "<token>"
+   ```
+   Env-var equivalents: `TURSO_DATABASE_URL`, `TURSO_AUTH_TOKEN`.
+3. Redeploy. The app now stores everything on Turso (`get_db()` switches
+   automatically); accounts, diary entries, streaks and groups all survive
+   sleeps, restarts and redeploys. Without these settings the app simply keeps
+   using the local SQLite file as before.

@@ -2,6 +2,7 @@ import calendar
 import json
 import os
 import re
+import sqlite3
 import tempfile
 import unittest
 from datetime import date, timedelta
@@ -1005,6 +1006,79 @@ def diet_entry(calories=100, name="Salad"):
 
 def spend_entry(price=50):
     return {"name": "lunch", "category": "Food", "price": price}
+
+
+class _NoPRAGMAConn:
+    """Wraps a sqlite connection but refuses PRAGMA, mimicking remote drivers."""
+
+    def __init__(self, conn):
+        self._conn = conn
+
+    def execute(self, sql, *args):
+        if sql.strip().upper().startswith("PRAGMA"):
+            raise RuntimeError("PRAGMA not supported")
+        return self._conn.execute(sql, *args)
+
+    def __getattr__(self, name):
+        return getattr(self._conn, name)
+
+
+class TestDatabaseBackend(unittest.TestCase):
+    """Local sqlite stays the default; Turso config is picked up from the
+    environment; schema migration is portable across drivers."""
+
+    def test_default_backend_is_local_sqlite(self):
+        conn = webapp.get_db()
+        self.assertIsInstance(conn, sqlite3.Connection)
+        conn.close()
+
+    def test_remote_config_read_from_env(self):
+        old = {k: os.environ.get(k) for k in ("TURSO_DATABASE_URL", "TURSO_AUTH_TOKEN")}
+        try:
+            os.environ["TURSO_DATABASE_URL"] = "libsql://test.example"
+            os.environ["TURSO_AUTH_TOKEN"] = "tok"
+            self.assertEqual(
+                webapp.remote_db_config(), ("libsql://test.example", "tok"))
+        finally:
+            for key, val in old.items():
+                if val is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = val
+
+    def _tmp_db(self):
+        fd, path = tempfile.mkstemp(suffix=".db")
+        os.close(fd)
+        return path
+
+    def test_add_column_idempotent(self):
+        path = self._tmp_db()
+        try:
+            conn = sqlite3.connect(path)
+            conn.execute("CREATE TABLE t (a TEXT)")
+            webapp._add_column(conn, "t", "b", "TEXT DEFAULT 'x'")
+            webapp._add_column(conn, "t", "b", "TEXT DEFAULT 'x'")  # no-op
+            cols = [r[1] for r in conn.execute("PRAGMA table_info(t)").fetchall()]
+            self.assertEqual(cols, ["a", "b"])
+            conn.close()
+        finally:
+            os.remove(path)
+
+    def test_add_column_without_pragma_support(self):
+        path = self._tmp_db()
+        try:
+            inner = sqlite3.connect(path)
+            inner.execute("CREATE TABLE t (a TEXT)")
+            inner.execute("INSERT INTO t VALUES ('v')")
+            inner.commit()
+            outer = _NoPRAGMAConn(inner)  # introspection must not be required
+            webapp._add_column(outer, "t", "b", "TEXT DEFAULT 'x'")
+            cols = [r[1] for r in inner.execute("PRAGMA table_info(t)").fetchall()]
+            self.assertIn("b", cols)
+            self.assertEqual(inner.execute("SELECT a, b FROM t").fetchone(), ("v", "x"))
+            inner.close()
+        finally:
+            os.remove(path)
 
 
 class TestStorageLimit(unittest.TestCase):
