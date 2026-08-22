@@ -1088,24 +1088,12 @@ class _FakeResult:
         self.rows = [list(r) for r in rows]
 
 
-class _FakeTx:
-    def __init__(self, log):
-        self._log = log
+class _FakeClient:
+    log = []
 
     def execute(self, sql, params=None):
-        self._log.append(("EXEC", sql, list(params or ())))
+        _FakeClient.log.append(("EXEC", sql, list(params or ())))
         return _FakeResult([[1, "a"], [2, "b"]])
-
-    def commit(self):
-        self._log.append(("COMMIT",))
-
-    def rollback(self):
-        self._log.append(("ROLLBACK",))
-
-
-class _FakeClient:
-    def transaction(self):
-        return _FakeTx(_FakeClient.log)
 
 
 class TestRemoteFallback(unittest.TestCase):
@@ -1147,26 +1135,23 @@ class TestRemoteFallback(unittest.TestCase):
             else:
                 sys.modules[name] = old
 
-    def test_http_adapter_execute_commit(self):
+    def test_http_adapter_execute_passthrough(self):
         conn = webapp.get_db()
         cur = conn.execute("SELECT ?, ?", (1, "a"))
         self.assertEqual(cur.fetchone(), (1, "a"))
         self.assertEqual(cur.fetchall(), [(2, "b")])
-        conn.close()  # commits the pending transaction
         # libsql:// is rewritten to https:// (websocket transport avoided)
         self.assertEqual(self.holder["cfg"], ("https://fake", "tok"))
-        execs = [c for c in self.log if c[0] == "EXEC"]
-        self.assertEqual(execs[0][1], "SELECT ?, ?")
-        self.assertEqual(execs[0][2], [1, "a"])
-        self.assertIn(("COMMIT",), self.log)
+        self.assertEqual(self.log[0], ("EXEC", "SELECT ?, ?", [1, "a"]))
 
-    def test_http_adapter_rollback_on_error(self):
+    def test_http_adapter_context_manager_is_safe_on_error(self):
         conn = webapp.get_db()
         with self.assertRaises(ValueError):
             with conn:
                 conn.execute("SELECT 1")
                 raise ValueError("boom")
-        self.assertIn(("ROLLBACK",), self.log)
+        # autocommit: the statement already persisted; exit must not mask it
+        self.assertEqual([c[0] for c in self.log], ["EXEC"])
 
 
 class TestStorageLimit(unittest.TestCase):

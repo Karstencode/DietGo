@@ -119,50 +119,32 @@ def _remote_db_url(url):
 class _RemoteConn:
     """sqlite3-style connection over the pure-Python libsql HTTP client.
 
-    A real server-side transaction opens lazily on the first execute and is
-    committed when the connection context exits (rolled back on error),
-    mirroring sqlite3's `with conn:` behaviour."""
+    The HTTP transport supports no server-side transactions, so each
+    statement commits immediately (safe for data); commit/rollback/close are
+    kept as no-ops so every `with get_db() as conn:` call site behaves exactly
+    as it does against local sqlite3."""
 
     def __init__(self, url, token):
         from libsql_client import create_client_sync
         self._client = create_client_sync(url=_remote_db_url(url),
                                           auth_token=token)
-        self._tx = None
-        self._autocommit = not hasattr(self._client, "transaction")
 
     def execute(self, sql, params=()):
-        if self._autocommit:
-            return _RemoteCursor(self._client.execute(sql, list(params)))
-        if self._tx is None:
-            self._tx = self._client.transaction()
-        return _RemoteCursor(self._tx.execute(sql, list(params)))
+        return _RemoteCursor(self._client.execute(sql, list(params)))
 
     def commit(self):
-        if not self._autocommit and self._tx is not None:
-            self._tx.commit()
-            self._tx = None
+        pass  # statements are already durable (HTTP autocommit)
 
     def rollback(self):
-        """Best-effort: a failed rollback must never mask the original error."""
-        if self._autocommit or self._tx is None:
-            return
-        try:
-            self._tx.rollback()
-        except Exception:
-            pass
-        self._tx = None
+        pass  # nothing to undo; never mask an in-flight error
 
     def close(self):
-        self.commit()
+        pass
 
     def __enter__(self):
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
-        if exc_type is None:
-            self.commit()
-        else:
-            self.rollback()
         return False
 
 
