@@ -3,7 +3,9 @@ import json
 import os
 import re
 import sqlite3
+import sys
 import tempfile
+import types
 import unittest
 from datetime import date, timedelta
 from main import (
@@ -1079,6 +1081,91 @@ class TestDatabaseBackend(unittest.TestCase):
             inner.close()
         finally:
             os.remove(path)
+
+
+class _FakeResult:
+    def __init__(self, rows):
+        self.rows = [list(r) for r in rows]
+
+
+class _FakeTx:
+    def __init__(self, log):
+        self._log = log
+
+    def execute(self, sql, params=None):
+        self._log.append(("EXEC", sql, list(params or ())))
+        return _FakeResult([[1, "a"], [2, "b"]])
+
+    def commit(self):
+        self._log.append(("COMMIT",))
+
+    def rollback(self):
+        self._log.append(("ROLLBACK",))
+
+
+class _FakeClient:
+    def transaction(self):
+        return _FakeTx(_FakeClient.log)
+
+
+class TestRemoteFallback(unittest.TestCase):
+    """get_db() falls back to the pure-Python libsql HTTP client when the
+    native libsql_experimental wheel is unavailable (e.g. Python 3.14 on
+    Streamlit Cloud)."""
+
+    def setUp(self):
+        self.log = []
+        _FakeClient.log = self.log
+        fake = types.ModuleType("libsql_client")
+        holder = {}
+
+        def create(url=None, auth_token=None):
+            holder["cfg"] = (url, auth_token)
+            return _FakeClient()
+
+        fake.create_client_sync = create
+        self.holder = holder
+        self.old_mod = sys.modules.get("libsql_client")
+        self.old_native = sys.modules.get("libsql_experimental")
+        self.old_env = {k: os.environ.get(k)
+                        for k in ("TURSO_DATABASE_URL", "TURSO_AUTH_TOKEN")}
+        sys.modules["libsql_client"] = fake
+        sys.modules["libsql_experimental"] = None  # force ImportError
+        os.environ["TURSO_DATABASE_URL"] = "libsql://fake"
+        os.environ["TURSO_AUTH_TOKEN"] = "tok"
+
+    def tearDown(self):
+        for key, val in self.old_env.items():
+            if val is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = val
+        for name, old in (("libsql_client", self.old_mod),
+                          ("libsql_experimental", self.old_native)):
+            if old is None:
+                sys.modules.pop(name, None)
+            else:
+                sys.modules[name] = old
+
+    def test_http_adapter_execute_commit(self):
+        conn = webapp.get_db()
+        cur = conn.execute("SELECT ?, ?", (1, "a"))
+        self.assertEqual(cur.fetchone(), (1, "a"))
+        self.assertEqual(cur.fetchall(), [(2, "b")])
+        conn.close()  # commits the pending transaction
+        self.assertEqual(self.holder["cfg"], ("libsql://fake", "tok"))
+        execs = [c for c in self.log if c[0] == "EXEC"]
+        self.assertEqual(execs[0][1], "SELECT ?, ?")
+        self.assertEqual(execs[0][2], [1, "a"])
+        self.assertIn(("COMMIT",), self.log)
+
+    def test_http_adapter_rollback_on_error(self):
+        conn = webapp.get_db()
+        with self.assertRaises(ValueError):
+            with conn:
+                conn.execute("SELECT 1")
+                raise ValueError("boom")
+        self.assertIn(("ROLLBACK",), self.log)
 
 
 class TestStorageLimit(unittest.TestCase):

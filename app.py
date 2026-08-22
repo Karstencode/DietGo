@@ -65,9 +65,90 @@ def remote_db_config():
 def get_db():
     url, token = remote_db_config()
     if url:
-        import libsql_experimental as sql3
-        return sql3.connect(url, auth_token=token or "")
+        try:
+            import libsql_experimental as sql3  # fast path if prebuilt wheel exists
+        except ImportError:
+            sql3 = None
+        if sql3 is not None:
+            return sql3.connect(url, auth_token=token or "")
+        return _RemoteConn(url, token or "")
     return sqlite3.connect(DB_PATH)
+
+
+def _remote_rows(result):
+    """Normalize a libsql-client ResultSet into lists of plain tuples."""
+    raw = getattr(result, "rows", result)
+    rows = []
+    for row in raw:
+        try:
+            rows.append(tuple(row))
+        except TypeError:
+            rows.append(tuple(row[i] for i in range(len(result.columns))))
+    return rows
+
+
+class _RemoteCursor:
+    """Minimal sqlite3-cursor surface (fetchone/fetchall) over one result."""
+
+    def __init__(self, result):
+        self._rows = _remote_rows(result)
+        self._pos = 0
+
+    def fetchone(self):
+        if self._pos >= len(self._rows):
+            return None
+        row = self._rows[self._pos]
+        self._pos += 1
+        return row
+
+    def fetchall(self):
+        rest = self._rows[self._pos:]
+        self._pos = len(self._rows)
+        return rest
+
+
+class _RemoteConn:
+    """sqlite3-style connection over the pure-Python libsql HTTP client.
+
+    A real server-side transaction opens lazily on the first execute and is
+    committed when the connection context exits (rolled back on error),
+    mirroring sqlite3's `with conn:` behaviour."""
+
+    def __init__(self, url, token):
+        from libsql_client import create_client_sync
+        self._client = create_client_sync(url=url, auth_token=token)
+        self._tx = None
+        self._autocommit = not hasattr(self._client, "transaction")
+
+    def execute(self, sql, params=()):
+        if self._autocommit:
+            return _RemoteCursor(self._client.execute(sql, list(params)))
+        if self._tx is None:
+            self._tx = self._client.transaction()
+        return _RemoteCursor(self._tx.execute(sql, list(params)))
+
+    def commit(self):
+        if not self._autocommit and self._tx is not None:
+            self._tx.commit()
+            self._tx = None
+
+    def rollback(self):
+        if not self._autocommit and self._tx is not None:
+            self._tx.rollback()
+            self._tx = None
+
+    def close(self):
+        self.commit()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if exc_type is None:
+            self.commit()
+        else:
+            self.rollback()
+        return False
 
 
 def _add_column(conn, table, column, decl):
