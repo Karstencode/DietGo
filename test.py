@@ -1153,7 +1153,8 @@ class TestRemoteFallback(unittest.TestCase):
         self.assertEqual(cur.fetchone(), (1, "a"))
         self.assertEqual(cur.fetchall(), [(2, "b")])
         conn.close()  # commits the pending transaction
-        self.assertEqual(self.holder["cfg"], ("libsql://fake", "tok"))
+        # libsql:// is rewritten to https:// (websocket transport avoided)
+        self.assertEqual(self.holder["cfg"], ("https://fake", "tok"))
         execs = [c for c in self.log if c[0] == "EXEC"]
         self.assertEqual(execs[0][1], "SELECT ?, ?")
         self.assertEqual(execs[0][2], [1, "a"])

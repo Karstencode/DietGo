@@ -56,10 +56,9 @@ def remote_db_config():
         token = st.secrets.get("turso_auth_token")
     except Exception:
         pass
-    return (
-        url or os.environ.get("TURSO_DATABASE_URL"),
-        token or os.environ.get("TURSO_AUTH_TOKEN"),
-    )
+    url = (url or os.environ.get("TURSO_DATABASE_URL") or "").strip()
+    token = (token or os.environ.get("TURSO_AUTH_TOKEN") or "").strip()
+    return url, token
 
 
 def get_db():
@@ -107,6 +106,16 @@ class _RemoteCursor:
         return rest
 
 
+def _remote_db_url(url):
+    """Rewrite libSQL schemes to plain HTTPS: the websocket transport is
+    fragile behind cloud proxies (handshake 400s on Streamlit Cloud)."""
+    for old, new in (("libsql://", "https://"), ("wss://", "https://"),
+                     ("ws://", "http://")):
+        if url.startswith(old):
+            return new + url[len(old):]
+    return url
+
+
 class _RemoteConn:
     """sqlite3-style connection over the pure-Python libsql HTTP client.
 
@@ -116,7 +125,8 @@ class _RemoteConn:
 
     def __init__(self, url, token):
         from libsql_client import create_client_sync
-        self._client = create_client_sync(url=url, auth_token=token)
+        self._client = create_client_sync(url=_remote_db_url(url),
+                                          auth_token=token)
         self._tx = None
         self._autocommit = not hasattr(self._client, "transaction")
 
@@ -133,9 +143,14 @@ class _RemoteConn:
             self._tx = None
 
     def rollback(self):
-        if not self._autocommit and self._tx is not None:
+        """Best-effort: a failed rollback must never mask the original error."""
+        if self._autocommit or self._tx is None:
+            return
+        try:
             self._tx.rollback()
-            self._tx = None
+        except Exception:
+            pass
+        self._tx = None
 
     def close(self):
         self.commit()
