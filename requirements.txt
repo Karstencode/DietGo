@@ -1,2 +1,2 @@
 streamlit>=1.29
-libsql-client>=0.4
+libsql-client>=0.3.1
